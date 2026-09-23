@@ -1,0 +1,61 @@
+# Style de Levain — ADR-0009, variante C.
+#
+# clang-format ne gère que la mise en forme. Le nommage (types PascalCase, fonctions et
+# variables camelCase, membres m_) est vérifié par clang-tidy, règle
+# readability-identifier-naming, mise en place dans l'issue #5.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Accolades sur leur propre ligne : chaque bloc a un début et une fin repérables en
+# diagonale, sans relire la ligne. C'est le choix d'Unreal, et celui qui fatigue le moins
+# quand on parcourt un fichier qu'on ne connaît pas.
+BreakBeforeBraces: Allman
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# « public: » s'aligne sur « class », pas sur les membres.
+AccessModifierOffset: -4
+
+# Pas d'indentation dans les namespaces : levain::core coûterait 4 colonnes à tout le
+# fichier pour une information déjà donnée par le chemin de l'en-tête.
+NamespaceIndentation: None
+FixNamespaceComments: true
+
+# « void* p », pas « void *p » : le type est « pointeur vers void », il se lit d'un bloc.
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# Les accesseurs d'une ligne restent sur une ligne ; tout le reste s'étale.
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Alignement en colonnes des déclarations et des affectations : désactivé exprès.
+# C'est joli mais renommer un membre reflow ses voisins, ce qui gonfle les diffs et
+# rend les PR plus longues à relire — règle non négociable n°2.
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+
+# Ordre des includes : en-tête du .cpp, puis la bibliothèque standard, puis les tiers,
+# puis nos propres en-têtes. On voit tout de suite d'où vient chaque dépendance.
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[a-z_]+>$'
+    Priority: 1
+  - Regex: '^<.*>$'
+    Priority: 2
+  - Regex: '^"levain/'
+    Priority: 4
+  - Regex: '.*'
+    Priority: 3
+
+# Une ligne vide entre deux définitions de fonctions : elles ne se collent jamais.
+SeparateDefinitionBlocks: Always
