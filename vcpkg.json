@@ -1,0 +1,40 @@
+{
+  "name": "rando",
+  "version": "0.1.0",
+  "description": "Rando, un jeu d'exploration fait avec Levain",
+  "homepage": "https://github.com/PhantomDO/Rando",
+  "license": "MIT",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "dependencies": [
+    "doctest",
+    {
+      "name": "directx-dxc",
+      "host": true
+    },
+    "flecs",
+    "glm",
+    "nvrhi",
+    {
+      "name": "shader-slang",
+      "host": true
+    },
+    {
+      "name": "sdl3",
+      "default-features": false,
+      "features": [
+        "vulkan",
+        "wayland",
+        "x11"
+      ]
+    },
+    "spdlog",
+    "stb",
+    "tracy",
+    "vk-bootstrap"
+  ],
+  "vcpkg-configuration": {
+    "overlay-ports": [
+      "./ports"
+    ]
+  }
+}

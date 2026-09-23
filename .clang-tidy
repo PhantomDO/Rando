@@ -1,0 +1,60 @@
+# Règles d'analyse statique de Levain.
+#
+# La partie qui compte est readability-identifier-naming : c'est elle qui fait respecter le
+# nommage de l'ADR-0009 par l'outil plutôt que par la discipline. clang-format ne gère que
+# la mise en forme et ne sait rien des identifiants.
+#
+# Le reste est volontairement resserré : on active ce qui attrape de vrais bugs et ce qui ne
+# demande jamais de discussion. Élargir plus tard coûte une ligne ; nettoyer une base de code
+# après coup coûte des jours. C'est gratuit maintenant, il y a 40 lignes de code.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  readability-identifier-naming,
+  readability-misleading-indentation,
+  readability-redundant-control-flow,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  -bugprone-easily-swappable-parameters
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/game/.*' # les en-têtes du moteur sont vérifiés par sa propre CI
+
+CheckOptions:
+  # Types
+  - { key: readability-identifier-naming.ClassCase,            value: CamelCase }
+  - { key: readability-identifier-naming.StructCase,           value: CamelCase }
+  - { key: readability-identifier-naming.EnumCase,             value: CamelCase }
+  - { key: readability-identifier-naming.UnionCase,            value: CamelCase }
+  - { key: readability-identifier-naming.TypeAliasCase,        value: CamelCase }
+  - { key: readability-identifier-naming.TypedefCase,          value: CamelCase }
+  - { key: readability-identifier-naming.TypeTemplateParameterCase, value: CamelCase }
+
+  # Fonctions et variables
+  - { key: readability-identifier-naming.FunctionCase,         value: camelBack }
+  - { key: readability-identifier-naming.MethodCase,           value: camelBack }
+  - { key: readability-identifier-naming.VariableCase,         value: camelBack }
+  - { key: readability-identifier-naming.ParameterCase,        value: camelBack }
+
+  # Membres : m_ sur ce qui n'est pas public. Les membres publics (structs de données,
+  # composants flecs) restent nus : les préfixer n'apprendrait rien, ils sont déjà visibles.
+  - { key: readability-identifier-naming.PrivateMemberPrefix,   value: m_ }
+  - { key: readability-identifier-naming.PrivateMemberCase,     value: camelBack }
+  - { key: readability-identifier-naming.ProtectedMemberPrefix, value: m_ }
+  - { key: readability-identifier-naming.ProtectedMemberCase,   value: camelBack }
+  - { key: readability-identifier-naming.PublicMemberCase,      value: camelBack }
+
+  # Constantes de compilation : PascalCase, comme les types (ADR-0009).
+  - { key: readability-identifier-naming.ConstexprVariableCase, value: CamelCase }
+  - { key: readability-identifier-naming.GlobalConstantCase,    value: CamelCase }
+  - { key: readability-identifier-naming.EnumConstantCase,      value: CamelCase }
+
+  - { key: readability-identifier-naming.NamespaceCase,         value: lower_case }
+
+  # Les macros sont à éviter ; celles qui survivent portent le nom du moteur, pour qu'on
+  # voie tout de suite qu'elles viennent de chez nous et pas d'un en-tête tiers.
+  - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
+  - { key: readability-identifier-naming.MacroDefinitionPrefix, value: LEVAIN_ }

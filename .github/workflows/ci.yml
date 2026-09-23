@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Une PR poussée trois fois de suite n'occupe pas trois fois les runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Le même job que celui du moteur (Levain, .github/workflows/ci.yml), d'où viennent tous les
+    # commentaires : ils y expliquent chaque étape. Ce qui change ici : le binaire lancé est le jeu,
+    # et le format et l'analyse statique ne portent que sur game/.
+    #
+    # Linux seul (ADR-0011 de Levain).
+    #
+    # Les noms `linux-debug`, `linux-release` et `linux-asan` sont les checks requis par la
+    # protection de `main` : ne pas les renommer sans mettre la protection à jour d'abord.
+    #
+    # `linux-asan` compile en Debug avec AddressSanitizer (dont LeakSanitizer) et
+    # UndefinedBehaviorSanitizer, puis lance le jeu : une fuite ou un comportement
+    # indéfini fait échouer le job.
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [linux-debug, linux-release, linux-asan]
+
+    env:
+      # Doit rester égal au "builtin-baseline" de vcpkg.json : vcpkg résout les versions de
+      # ports à partir de ce commit, il doit donc exister dans le clone.
+      VCPKG_TAG: "2026.07.29"
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+      # Hors du clone de vcpkg, pour pouvoir le mettre en cache sans dépendre de l'ordre du clone.
+      VCPKG_DOWNLOADS: ${{ github.workspace }}/vcpkg-downloads
+      # Doit rester égal à la version de la machine de référence (SPECS §10) : clang-format
+      # ne produit pas la même sortie d'une version majeure à l'autre, un écart ferait
+      # échouer le contrôle de format sur des fichiers pourtant corrects.
+      LLVM_VERSION: "22"
+      # Explicite plutôt que par défaut : si LeakSanitizer ne pouvait pas tourner sur le
+      # runner, le programme s'arrêterait en erreur au lieu de sauter la détection en silence.
+      ASAN_OPTIONS: detect_leaks=1
+      UBSAN_OPTIONS: print_stacktrace=1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # zip est indispensable au bootstrap de vcpkg et manque sur l'image.
+      #
+      # Vulkan : le runner n'a pas de GPU. mesa-vulkan-drivers apporte lavapipe, le Vulkan
+      # logiciel de Mesa, qui fournit aussi VK_EXT_headless_surface, la surface du pilote
+      # offscreen de SDL. vulkan-validationlayers : la validation est exigée en Debug (règle n°4).
+      #
+      # Les paquets -dev sont la partie vidéo de la liste officielle de SDL (README-linux,
+      # « Build dependencies », Ubuntu). SDL refuse de se configurer s'il manque une extension
+      # X11 demandée — contrôles stricts de cmake/sdlchecks.cmake : Xcursor, Xdbe, XInput2,
+      # Xfixes, Xsync, Xrandr, Xshape, XTest. La liste réduite que suggère le port vcpkg ne
+      # suffit pas. L'audio est absent exprès, SDL s'en passe sans erreur.
+      - name: Outils
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y ninja-build zip unzip \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxtst-dev \
+            libxkbcommon-dev libwayland-dev libdecor-0-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libgles2-mesa-dev libdrm-dev libgbm-dev libudev-dev \
+            libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
+
+          # Le script est téléchargé puis exécuté, et non passé en pipe à bash : un `wget`
+          # qui échoue donnerait sinon une entrée vide à bash, qui rendrait 0 et laisserait
+          # l'étape verte sans rien avoir installé.
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ env.LLVM_VERSION }}
+          sudo apt-get install -y \
+            clang-format-${{ env.LLVM_VERSION }} clang-tidy-${{ env.LLVM_VERSION }}
+
+          # Des liens dans /usr/local/bin, qui précède /usr/bin dans le PATH.
+          # `update-alternatives` ne convient pas ici : /usr/bin/clang++ est un vrai
+          # fichier livré par le paquet clang, pas un lien géré par alternatives — la
+          # commande ne le remplace donc pas, et la version installée reste ignorée.
+          for t in clang clang++ clang-format clang-tidy; do
+            sudo ln -sf "/usr/bin/$t-${{ env.LLVM_VERSION }}" "/usr/local/bin/$t"
+          done
+
+      # Garde-fou : une chaîne silencieusement différente de celle attendue est exactement
+      # ce qui nous a échappé de M0.2 à M0.3. La CI a tourné trois milestones sur clang 18
+      # en croyant utiliser clang 22, et personne n'a lu la version qu'elle imprimait.
+      - name: Vérifier la chaîne
+        run: |
+          set -euo pipefail
+          clang++ --version | head -1
+          clang-format --version
+          clang-tidy --version | head -2
+          for t in clang++ clang-format clang-tidy; do
+            $t --version | grep -q "${{ env.LLVM_VERSION }}\." \
+              || { echo "::error::$t n'est pas en version ${{ env.LLVM_VERSION }}"; exit 1; }
+          done
+
+      - name: Cloner vcpkg
+        run: git clone --depth 1 --branch "${{ env.VCPKG_TAG }}" https://github.com/microsoft/vcpkg.git vcpkg
+
+      # Les téléchargements de vcpkg : ses outils (dont son propre CMake) et les sources des ports.
+      # Sans ce cache, chaque exécution les reprenait sur GitHub, et une erreur 504 a fait
+      # échouer la CI de #72 sans rien à voir avec le code. restore-keys : un manifeste modifié
+      # repart des téléchargements précédents au lieu de tout reprendre.
+      - name: Cache des téléchargements vcpkg
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-downloads
+          key: vcpkg-downloads-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
+          restore-keys: vcpkg-downloads-${{ env.VCPKG_TAG }}-
+
+      # Avant le bootstrap : son script refuse de démarrer si VCPKG_DOWNLOADS n'est pas un
+      # dossier existant. Et après la restauration, pour la même raison que le cache binaire.
+      - name: Créer le dossier des téléchargements
+        run: mkdir -p vcpkg-downloads
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      # On cache les archives binaires de vcpkg, pas ses sources : 19 Mo mesurés pour
+      # nvrhi + flecs + doctest, contre 23 s de compilation à froid (journal, M0.2).
+      # ports/ fait partie de la clé : un port overlay modifié change l'ABI du paquet, et un
+      # cache figé sous l'ancienne clé le ferait recompiler à chaque exécution.
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
+
+      # vcpkg refuse de démarrer si le dossier de cache binaire n'existe pas. Cette étape
+      # doit rester APRÈS la restauration : avant, le dossier existerait déjà et le cache
+      # ne serait jamais restauré, sans le moindre message d'erreur.
+      - name: Créer le dossier de cache
+        run: mkdir -p vcpkg-cache
+
+      - name: Configurer et compiler
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      # Garde-fou : un preset dont les drapeaux se seraient perdus compilerait sans
+      # instrumentation, et le job resterait vert sans avoir rien vérifié.
+      - name: Vérifier l'instrumentation
+        if: matrix.preset == 'linux-asan'
+        run: |
+          for symbol in __asan_init __ubsan_handle; do
+            nm build/linux-asan/game/rando | grep -q "$symbol" \
+              || { echo "::error::$symbol absent : le jeu n'est pas instrumenté"; exit 1; }
+          done
+
+      # Le runner n'a pas d'écran : SDL passe par son pilote « offscreen ». Même lancement que le
+      # sandbox du moteur : --seconds 3, timeout comme filet, et une boucle d'au moins une seconde
+      # exigée (règle n°7 de Levain).
+      - name: Lancer le jeu
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          set -euo pipefail
+          timeout --foreground --preserve-status -k 10 60 \
+            ./build/${{ matrix.preset }}/game/rando --seconds 3 | tee rando.log
+          grep -Eq "boucle arrêtée après ([1-9]|[0-9]{2,})\.[0-9] s" rando.log \
+            || { echo "::error::la boucle du jeu a tourné moins d'une seconde"; exit 1; }
+
+      # Format et analyse statique une seule fois : ce sont des propriétés des sources, pas
+      # de la configuration de build.
+      - name: Format
+        if: matrix.preset == 'linux-debug'
+        run: |
+          find game -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-format --dry-run --Werror
+
+      - name: Analyse statique
+        if: matrix.preset == 'linux-debug'
+        run: |
+          find game -name '*.cpp' \
+            | xargs clang-tidy -p build/${{ matrix.preset }} --warnings-as-errors='*'
