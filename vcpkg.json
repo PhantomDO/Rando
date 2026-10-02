@@ -12,8 +12,21 @@
       "host": true
     },
     "flecs",
+    {
+      "name": "dawn",
+      "default-features": false,
+      "features": [
+        {
+          "name": "vulkan",
+          "platform": "!emscripten"
+        }
+      ]
+    },
+    "fastgltf",
     "glm",
+    "ktx",
     "nvrhi",
+    "ozz-animation",
     {
       "name": "shader-slang",
       "host": true
@@ -22,15 +35,30 @@
       "name": "sdl3",
       "default-features": false,
       "features": [
-        "vulkan",
-        "wayland",
-        "x11"
+        {
+          "name": "vulkan",
+          "platform": "!emscripten"
+        },
+        {
+          "name": "wayland",
+          "platform": "!emscripten"
+        },
+        {
+          "name": "x11",
+          "platform": "!emscripten"
+        }
       ]
     },
     "spdlog",
     "stb",
-    "tracy",
-    "vk-bootstrap"
+    {
+      "name": "tracy",
+      "platform": "!emscripten"
+    },
+    {
+      "name": "vk-bootstrap",
+      "platform": "!emscripten"
+    }
   ],
   "vcpkg-configuration": {
     "overlay-ports": [
