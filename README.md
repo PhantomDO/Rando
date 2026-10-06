@@ -30,7 +30,14 @@ cmake --build --preset linux-debug
 Les options communes du moteur s'appliquent (`--seconds N`, `--steps N`, `--capture f.png`, `--gpu webgpu`…),
 plus `--walk x,z` : la direction que suit le renard, dans le monde, au lieu du clavier, et `--start x,z` : où il
 commence. La CI lance
-`rando --walk 1,0 --steps 120` et vérifie où finit le renard. Avec `FETCHCONTENT_SOURCE_DIR_LEVAIN`, le script
+`rando --walk 1,0 --steps 120` et vérifie où finit le renard.
+
+**La caméra** ([ADR-0030 de Levain](https://github.com/PhantomDO/Levain/blob/main/docs/adr/0030-camera-troisieme-personne.md),
+`plugins/camera`) tourne autour du renard à la souris, capturée au démarrage (Échap la libère, un clic la
+reprend), ou au stick droit. Elle rentre contre la roche que coupe son bras, et se replace derrière le renard
+quand il marche sans qu'on y touche. Pour la CI, `--orbit N` la fait tourner à N°/s avec `--steps`, et
+`--camera-collision off` lui fait traverser la roche, pour prouver que la mesure de la marge au relief mord.
+Les tests du plugin : `ctest --test-dir build/linux-debug`. Avec `FETCHCONTENT_SOURCE_DIR_LEVAIN`, le script
 est dans le clone du moteur : `../Levain/tools/fetch-assets.sh assets-cache …`.
 
 Le moteur est récupéré par `FetchContent`, **au commit figé** dans `CMakeLists.txt`. Monter de version est
