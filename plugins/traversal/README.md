@@ -41,7 +41,7 @@ Un état à la fois décide de la vitesse du joueur, au-dessus du character cont
 
 | Fichier | Contenu |
 |---|---|
-| [`include/rando/traversal/traversal.hpp`](include/rando/traversal/traversal.hpp) | `Mode`, `Glider`, `Swimmer`, `StaminaRates`, `TraversalRules`, `Stamina`, `Traversal`, `waterDepthAt`, `nextMode`, `brakeToGlide`, `glideVelocity`, `brakeInWater`, `swimVelocity`, `staminaAfter`, `motionOf` |
+| [`include/rando/traversal/traversal.hpp`](include/rando/traversal/traversal.hpp) | `Mode`, `Glider`, `Swimmer`, `StaminaRates`, `TraversalRules`, `Stamina`, `Traversal`, `waterDepthAt`, `GroundProbe`, `nearestShore`, `groundProbe`, `nextMode`, `brakeToGlide`, `glideVelocity`, `brakeInWater`, `swimVelocity`, `staminaAfter`, `motionOf`, `stepTraversal`, `TraversalModule` |
 
 Les tests : `tests/traversal_test.cpp`.
 
