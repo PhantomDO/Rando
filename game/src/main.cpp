@@ -21,6 +21,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "rando/camera/third_person.hpp"
+#include "valley_world.hpp"
 
 #include "levain/animation/animator.hpp"
 #include "levain/app/app.hpp"
@@ -49,19 +50,6 @@
 
 namespace
 {
-
-/// La hauteur de l'eau du lac, sous le fond plat de la vallée : elle ne remplit que son creux.
-constexpr float LakeLevel = -1.5f;
-
-/// La marche du renard : les réglages par défaut du plugin `character`. Le joueur les porte, et
-/// l'animation y règle ses vitesses de marche et de course.
-constexpr levain::character::Walker FoxWalker{};
-
-/// La capsule du renard : 0,8 m de haut, pour un renard de 0,79 m à l'échelle 0,01 (Fox mesure
-/// 155 × 79 unités). Elle ne couvre ni son museau ni sa queue : le compromis habituel d'un
-/// quadrupède sur une capsule debout.
-constexpr levain::physics::CharacterController FoxController{
-    .shape = {.halfHeight = 0.1f, .radius = 0.3f}};
 
 /// Les options du jeu ; les options communes sont celles de `levain::app` (`--seconds`, `--steps`,
 /// `--capture`…).
@@ -173,21 +161,6 @@ struct Valley
     float minimumMargin = std::numeric_limits<float>::infinity();
     int measuredPoses = 0;
 };
-
-/// Où le renard commence : sur le fond plat de la vallée, 1,4 rayon à l'ouest du lac, face à lui.
-glm::vec3 startOf(const levain::terrain::Heightmap& heightmap,
-                  const levain::terrain::ValleySettings& valley)
-{
-    const glm::vec2 spot = valley.lakeCenter - glm::vec2{valley.lakeRadius * 1.4f, 0.0f};
-    return {spot.x, levain::terrain::heightAt(heightmap, spot), spot.y};
-}
-
-/// L'orientation qui tourne l'avant d'un personnage (−z) vers +x : un quart de tour autour de Y,
-/// dans le sens horaire vu d'en haut, d'où le signe moins.
-glm::quat facingPlusX()
-{
-    return glm::angleAxis(-glm::half_pi<float>(), glm::vec3{0.0f, 1.0f, 0.0f});
-}
 
 /// Ce que le joueur demande au renard, à chaque image : la direction des axes **tournée selon le
 /// lacet de la caméra** (« avant » est là où elle regarde), ou celle de `--walk`, une direction du
@@ -377,26 +350,13 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     const levain::terrain::ValleySettings settings;
     levain::terrain::Heightmap heightmap = levain::terrain::valleyOf(settings);
     flecs::world& world = app.world;
-    world.import<levain::physics::PhysicsModule>();
-    world.import<levain::character::WalkModule>();
-    world.entity("terrain")
-        .set(levain::scene::Transform{})
-        .set(levain::terrain::colliderOf(heightmap));
+    rando::spawnValley(world, heightmap, settings);
 
     // Le joueur, une racine sans échelle (ADR-0028 de Levain), et le renard, son enfant, avec son
     // échelle : 0,01, et un demi-tour, son avant étant +z quand celui du personnage est −z.
-    const glm::vec3 start =
-        options.start
-            ? glm::vec3{options.start->x, levain::terrain::heightAt(heightmap, *options.start),
-                        options.start->y}
-            : startOf(heightmap, settings);
-    const flecs::entity player =
-        world.entity("player")
-            .set(levain::scene::Transform{.position = start, .rotation = facingPlusX()})
-            .set(FoxController)
-            .set(FoxWalker)
-            .set(levain::character::WalkInput{})
-            .set(levain::animation::CharacterMotion{});
+    const glm::vec3 start = options.start ? rando::feetAt(heightmap, *options.start)
+                                          : rando::startOf(heightmap, settings);
+    const flecs::entity player = rando::spawnPlayer(world, start, rando::facingPlusX());
     auto fox = levain::app::loadModel(
         app,
         {.path = std::filesystem::path{RANDO_ASSETS_DIR} / "Models/Fox/glTF/Fox.gltf",
@@ -406,8 +366,8 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
          .name = "fox",
          .clip = std::nullopt,
          .locomotion = levain::app::LocomotionClips{.names = {"Survey", "Walk", "Run"},
-                                                    .walkSpeed = FoxWalker.walkSpeed,
-                                                    .runSpeed = FoxWalker.runSpeed}});
+                                                    .walkSpeed = rando::FoxWalker.walkSpeed,
+                                                    .runSpeed = rando::FoxWalker.runSpeed}});
     if (!fox)
     {
         return std::unexpected(fox.error());
@@ -424,7 +384,8 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
                                                           .collides = options.cameraCollides};
     const levain::app::CameraLens lens{
         .verticalFovDegrees = 60.0f, .nearPlane = 0.2f, .farPlane = 1000.0f};
-    rando::camera::CameraOrbit orbit{.yawDegrees = rando::camera::yawDegreesOf(facingPlusX())};
+    rando::camera::CameraOrbit orbit{.yawDegrees =
+                                         rando::camera::yawDegreesOf(rando::facingPlusX())};
     const levain::scene::Transform cameraStart = rando::camera::stepCamera(
         cameraSettings, orbit, {},
         rando::camera::nearPlaneRadius(lens, cameraSettings.aspectRatio) +
@@ -447,17 +408,15 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
         levain::app::submitAbandonedUpload(device, *upload);
         return std::unexpected(terrain.error());
     }
-    auto water = levain::water::createWaterPass(
-        device, *upload,
-        {.center = settings.lakeCenter, .radius = settings.lakeRadius, .level = LakeLevel},
-        *terrain, heightmap, app.renderer.frame);
+    auto water = levain::water::createWaterPass(device, *upload, rando::lakeOf(settings), *terrain,
+                                                heightmap, app.renderer.frame);
     if (!water)
     {
         levain::app::submitAbandonedUpload(device, *upload);
         return std::unexpected(water.error());
     }
-    auto grass = levain::grass::createGrassPass(device, *upload, *terrain, heightmap, LakeLevel,
-                                                app.renderer.frame);
+    auto grass = levain::grass::createGrassPass(device, *upload, *terrain, heightmap,
+                                                rando::LakeLevel, app.renderer.frame);
     if (!grass)
     {
         levain::app::submitAbandonedUpload(device, *upload);
