@@ -87,3 +87,56 @@ TEST_CASE("le lacet d'un personnage tourné vers +X vaut −90°")
     const glm::quat facingPlusX = glm::angleAxis(glm::radians(-90.0f), glm::vec3{0.0f, 1.0f, 0.0f});
     CHECK(rando::camera::yawDegreesOf(facingPlusX) == doctest::Approx(-90.0f));
 }
+
+TEST_CASE("la diagonale du clavier ne déclenche pas le recentrage")
+{
+    // La caméra regarde vers −Z ; avant et droite ensemble, la marche fait 45° avec le regard.
+    const glm::vec2 diagonal = glm::normalize(glm::vec2{1.0f, -1.0f});
+    CHECK_FALSE(
+        rando::camera::walksAwayFrom(diagonal, 0.0f, ThirdPersonCamera{}.recenterMaxDegrees));
+    CHECK(rando::camera::walksAwayFrom({0.0f, -1.0f}, 0.0f, 40.0f));
+    CHECK_FALSE(rando::camera::walksAwayFrom({0.0f, 0.0f}, 0.0f, 40.0f));
+}
+
+TEST_CASE("le regard tourne, se borne, et compte le temps sans y toucher")
+{
+    ThirdPersonCamera camera;
+    CameraOrbit orbit{.yawDegrees = 0.0f, .pitchDegrees = 0.0f, .secondsWithoutLook = 3.0f};
+    // « Droite » fait décroître le lacet, qui croît vers la gauche ; le regard remet le compteur à
+    // zéro.
+    rando::camera::orbit(orbit, camera, {.look = {90.0f, 0.0f}}, 0.5f);
+    CHECK(orbit.yawDegrees == doctest::Approx(-45.0f));
+    CHECK(orbit.secondsWithoutLook == 0.0f);
+    // Lever les yeux longtemps : le tangage s'arrête à sa borne haute.
+    rando::camera::orbit(orbit, camera, {.look = {0.0f, 90.0f}}, 10.0f);
+    CHECK(orbit.pitchDegrees == doctest::Approx(camera.maxPitchDegrees));
+    // Sans regard, le temps s'ajoute ; le lacet reste dans un tour.
+    rando::camera::orbit(orbit, camera, {}, 0.25f);
+    CHECK(orbit.secondsWithoutLook == doctest::Approx(0.25f));
+    rando::camera::orbit(orbit, camera, {.look = {720.0f, 0.0f}}, 1.0f);
+    CHECK(std::abs(orbit.yawDegrees) <= 180.0f);
+}
+
+TEST_CASE("la caméra regarde le pivot, quel que soit son lacet et son tangage")
+{
+    ThirdPersonCamera camera;
+    CameraOrbit orbit{.yawDegrees = 130.0f, .pitchDegrees = -35.0f, .armLength = 3.5f};
+    const auto noWall = [](glm::vec3, glm::vec3, float, float) -> std::optional<float>
+    { return std::nullopt; };
+    const levain::scene::Transform pose = rando::camera::stepCamera(
+        camera, orbit, {}, 0.3f, {.feet = {10.0f, 2.0f, -4.0f}, .yawDegrees = 0.0f, .velocity = {}},
+        noWall, 1.0f / 60.0f);
+    const glm::vec3 pivot{10.0f, 2.0f + camera.pivotHeight, -4.0f};
+    const glm::vec3 look = pose.rotation * glm::vec3{0.0f, 0.0f, -1.0f};
+    const glm::vec3 toPivot = glm::normalize(pivot - pose.position);
+    CHECK(glm::dot(look, toPivot) == doctest::Approx(1.0f).epsilon(1e-4));
+}
+
+TEST_CASE("le retour du bras ne dépend pas de la durée des pas")
+{
+    // Deux demi-pas mènent où mène un pas entier : l'approche est exponentielle.
+    const float whole = rando::camera::armLengthAfter(1.0f, 3.5f, std::nullopt, 0.4f, 0.1f);
+    const float half = rando::camera::armLengthAfter(1.0f, 3.5f, std::nullopt, 0.4f, 0.05f);
+    const float twice = rando::camera::armLengthAfter(half, 3.5f, std::nullopt, 0.4f, 0.05f);
+    CHECK(twice == doctest::Approx(whole));
+}

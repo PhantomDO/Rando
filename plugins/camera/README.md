@@ -32,6 +32,11 @@ ressort en douceur, et se replace derrière lui quand il marche sans qu'on y tou
   ne suit donc qu'un joueur qui s'éloigne de la caméra (`recenteredYaw`).
 - **La caméra part du bout du bras** : posée sur les pieds du renard, la première image interpolerait depuis
   l'intérieur du sol (vu par la mesure de la CI, −0,16 m).
+- **La cible est une racine** : la caméra lit son `Transform`, sa pose locale. Sans `CharacterState`, elle n'a pas
+  de vitesse, et la caméra ne se recentre jamais. Une cible disparue arrête la caméra, avec une erreur au
+  journal, une fois.
+- **La diagonale du clavier fait 45° avec le regard** : le recentrage ne suit qu'une marche à moins de 40°
+  (`recenterMaxDegrees`), sans quoi il s'enclencherait ou non selon l'arrondi de la vitesse.
 - **Le plan proche est à 0,2 m**, et non 0,5 m comme le sandbox du moteur : à 0,5 m, la sphère ferait 0,82 m, et
   la caméra ne s'approcherait jamais d'une paroi.
 
@@ -39,7 +44,7 @@ ressort en douceur, et se replace derrière lui quand il marche sans qu'on y tou
 
 | Fichier | Contenu |
 |---|---|
-| [`include/rando/camera/third_person.hpp`](include/rando/camera/third_person.hpp) | `ThirdPersonCamera` (les réglages), `CameraOrbit` (l'état), `OrbitInput` ; `nearPlaneRadius`, `orbit`, `recenteredYaw`, `armLengthAfter`, `armDirection`, `stepCamera` ; `ThirdPersonCameraModule` |
+| [`include/rando/camera/third_person.hpp`](include/rando/camera/third_person.hpp) | `ThirdPersonCamera` (les réglages), `CameraOrbit` (l'état), `OrbitInput` ; `nearPlaneRadius`, `orbit`, `walksAwayFrom`, `recenteredYaw`, `armLengthAfter`, `armDirection`, `yawDegreesOf`, `stepCamera` ; `armSphereCast`, `cameraTargetOf` ; `ThirdPersonCameraModule` |
 | [`src/third_person.cpp`](src/third_person.cpp) | La logique, et le système flecs qui la branche sur la physique |
 
 ## Équivalents ailleurs

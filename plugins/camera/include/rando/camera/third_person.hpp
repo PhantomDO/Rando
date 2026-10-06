@@ -13,6 +13,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "levain/app/camera.hpp"
+#include "levain/physics/physics_world.hpp"
 #include "levain/scene/components.hpp"
 
 namespace rando::camera
@@ -34,6 +35,10 @@ struct ThirdPersonCamera
     float recenterWaitSeconds = 1.5f; ///< Sans regard, l'attente avant le recentrage.
     float recenterSeconds = 1.0f;     ///< La constante de temps du recentrage.
     float recenterMinSpeed = 0.5f;    ///< En dessous, en m/s, le joueur est à l'arrêt.
+    /// Le recentrage ne suit qu'une marche à moins de cet angle du regard. Loin de 45° : la
+    /// diagonale du clavier (avant et droite) y tombe pile, et le renard tournerait en rond selon
+    /// l'arrondi de sa vitesse.
+    float recenterMaxDegrees = 40.0f;
     /// Ce que la sphère garde en plus du plan proche : collision, image et mesure ne voient pas
     /// exactement le même relief (ADR-0030).
     float probeMargin = 0.05f;
@@ -41,6 +46,8 @@ struct ThirdPersonCamera
     float aspectRatio = 16.0f / 9.0f;
     /// Faux : le bras traverse tout. Seulement pour prouver que le contrôle de la CI mord.
     bool collides = true;
+    /// La cible a disparu, et le journal l'a dit : il ne le répète pas à chaque pas.
+    bool targetLost = false;
 };
 
 /// Où regarde la caméra, et ce qu'elle se rappelle d'un pas à l'autre. Les angles sont la source :
@@ -69,11 +76,14 @@ struct OrbitInput
 void orbit(CameraOrbit& orbit, const ThirdPersonCamera& camera, const OrbitInput& input,
            float seconds);
 
+/// Le joueur s'éloigne-t-il de la caméra ? Sa vitesse sur le plan horizontal à moins de
+/// `maxDegrees` du regard de la caméra, de lacet `yawDegrees`.
+[[nodiscard]] bool walksAwayFrom(glm::vec2 velocity, float yawDegrees, float maxDegrees);
+
 /// Le lacet recentré vers celui du joueur, s'il le faut : le regard resté à zéro depuis
 /// `recenterWaitSeconds`, le joueur qui avance plus vite que `recenterMinSpeed`, **et qui
-/// s'éloigne de la caméra**, sa marche à moins de 45° de son regard. Le piège : sans cette dernière
-/// condition, tenir « droite » ferait tourner le renard en rond, la caméra et sa droite tournant
-/// derrière lui.
+/// s'éloigne de la caméra** (`walksAwayFrom`). Le piège : sans cette dernière condition, tenir
+/// « droite » ferait tourner le renard en rond, la caméra et sa droite tournant derrière lui.
 [[nodiscard]] float recenteredYaw(const CameraOrbit& orbit, const ThirdPersonCamera& camera,
                                   float targetYawDegrees, glm::vec2 targetVelocity, float seconds);
 
@@ -98,9 +108,18 @@ struct CameraTarget
 };
 
 /// Le premier obstacle d'une sphère de rayon `radius` lancée de `origin` vers `direction`, sur
-/// `length` : la distance parcourue par son centre, ou rien. Dans le jeu, `physics::sphereCast`.
+/// `length` : la distance parcourue par son centre, ou rien. Dans le jeu, `armSphereCast`.
 using SphereCast = std::function<std::optional<float>(glm::vec3 origin, glm::vec3 direction,
                                                       float length, float radius)>;
+
+/// Le sphere cast du bras dans la physique : contre le décor et ce qui roule, pas contre le
+/// personnage, dont la capsule contient le pivot, ni contre les volumes déclencheurs (le lac).
+[[nodiscard]] SphereCast armSphereCast(const levain::physics::PhysicsWorld& physics);
+
+/// Ce que la caméra suit, lu sur l'entité cible : ses pieds (son `Transform` : une racine), son
+/// lacet, et sa vitesse s'il est un personnage ; sans `CharacterState`, il n'y a pas de recentrage.
+/// Vide si la cible n'existe plus.
+[[nodiscard]] std::optional<CameraTarget> cameraTargetOf(flecs::entity target);
 
 /// Un pas de caméra (ADR-0030) : le regard, le recentrage, le bras contre la roche, puis la pose,
 /// au bout du bras, regardant le pivot.
@@ -110,9 +129,10 @@ using SphereCast = std::function<std::optional<float>(glm::vec3 origin, glm::vec
                                                   const SphereCast& sphereCast, float seconds);
 
 /// Le module flecs de la caméra : `world.import<rando::camera::ThirdPersonCameraModule>()`. Une
-/// entité qui porte `ThirdPersonCamera`, `CameraOrbit`, `OrbitInput`, un `CameraLens` et un
-/// `Transform` suit sa cible, dans la phase `PostPhysics`, après que la cible a bougé. Elle doit
-/// porter un `PreviousTransform` : le rendu l'interpole entre deux pas.
+/// entité qui porte `ThirdPersonCamera` et un `CameraLens` suit sa cible, dans la phase
+/// `PostPhysics`, après que la cible a bougé ; le module lui ajoute ce qu'il lui faut :
+/// `CameraOrbit`, `OrbitInput`, `Transform`, et `PreviousTransform`, pour que le rendu
+/// l'interpole entre deux pas. Il importe la physique, dont le bras a besoin.
 struct ThirdPersonCameraModule
 {
     explicit ThirdPersonCameraModule(flecs::world& world);
