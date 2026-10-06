@@ -132,8 +132,9 @@ jobs:
       # restore-keys : un manifeste modifié repart du cache du manifeste précédent. vcpkg ne reprend
       # une archive que si l'ABI de son paquet n'a pas changé : il ne compile que ce qui manque, au
       # lieu de tout (25 à 37 min par job quand Jolt est arrivé, #6). Les archives périmées restent
-      # dans le cache : il grossit à chaque changement du manifeste (891 Mo après #6). Le cache d'une
-      # PR n'est visible que d'elle-même : les PR empilées au-dessus repartent de celui de main.
+      # dans le cache : il grossit à chaque changement du manifeste (891 Mo après #6). Une PR lit le
+      # cache de main et de sa branche de base, mais le sien n'est lisible que par elle : la CI ne
+      # tournant en push que sur main, les PR empilées au-dessus repartent de celui de main.
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
