@@ -1,5 +1,8 @@
 #include "valley_world.hpp"
 
+#include <algorithm>
+#include <optional>
+
 #include <glm/gtc/constants.hpp>
 
 #include "levain/physics/physics.hpp"
@@ -40,6 +43,33 @@ void spawnValley(flecs::world& world, const levain::terrain::Heightmap& heightma
     world.entity("terrain")
         .set(levain::scene::Transform{})
         .set(levain::terrain::colliderOf(heightmap));
+}
+
+camera::SphereCast heightmapArmCast(const levain::terrain::Heightmap& heightmap)
+{
+    return [&heightmap](glm::vec3 origin, glm::vec3 direction, float length,
+                        float radius) -> std::optional<float>
+    {
+        constexpr float Stride = 0.05f;
+        const int strides = static_cast<int>(length / Stride);
+        for (int stride = 0; stride <= strides; ++stride)
+        {
+            const float distance = static_cast<float>(stride) * Stride;
+            const glm::vec3 center = origin + (direction * distance);
+            float ground = levain::terrain::heightAt(heightmap, {center.x, center.z});
+            for (const glm::vec2 offset : {glm::vec2{radius, 0.0f}, glm::vec2{-radius, 0.0f},
+                                           glm::vec2{0.0f, radius}, glm::vec2{0.0f, -radius}})
+            {
+                ground = std::max(ground, levain::terrain::heightAt(
+                                              heightmap, glm::vec2{center.x, center.z} + offset));
+            }
+            if (center.y - radius <= ground)
+            {
+                return std::max(distance - Stride, 0.0f);
+            }
+        }
+        return std::nullopt;
+    };
 }
 
 flecs::entity spawnPlayer(flecs::world& world, const glm::vec3& feet, const glm::quat& rotation)

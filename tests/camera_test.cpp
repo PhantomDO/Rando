@@ -140,3 +140,44 @@ TEST_CASE("le retour du bras ne dépend pas de la durée des pas")
     const float twice = rando::camera::armLengthAfter(half, 3.5f, std::nullopt, 0.4f, 0.05f);
     CHECK(twice == doctest::Approx(whole));
 }
+
+TEST_CASE("le bras raccourci par le jeu rentre en douceur, pas d'un coup")
+{
+    // À l'atterrissage, le jeu repasse de 6 à 3,5 m (ADR-0031) : sans obstacle, le bras y va
+    // exponentiellement, comme il en revient.
+    const float landing =
+        rando::camera::armLengthAfter(6.0f, 3.5f, std::nullopt, 0.4f, 1.0f / 60.0f);
+    CHECK(landing < 6.0f);
+    CHECK(landing > 5.8f);
+    // Un obstacle plus près que le bras actuel l'arrête toujours net.
+    CHECK(rando::camera::armLengthAfter(6.0f, 3.5f, 4.0f, 0.4f, 1.0f / 60.0f) == 4.0f);
+}
+
+TEST_CASE("sous le plancher de l'eau, la caméra se relève et vise le joueur")
+{
+    const glm::vec3 pivot{0.0f, -1.3f, 0.0f};
+    // Derrière le pivot (+z), plus bas que lui : le tangage vers le haut d'un nageur.
+    const levain::scene::Transform under{.position = {0.0f, -2.0f, 3.0f},
+                                         .rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f}};
+    const levain::scene::Transform raised = rando::camera::aboveFloor(under, pivot, -1.14f);
+    CHECK(raised.position.y == doctest::Approx(-1.14f));
+    CHECK(raised.position.z == 3.0f);
+    // Elle regarde le pivot : son avant (−z) pointe vers lui, un peu vers le bas.
+    const glm::vec3 forward = raised.rotation * glm::vec3{0.0f, 0.0f, -1.0f};
+    const glm::vec3 toPivot = glm::normalize(pivot - raised.position);
+    CHECK(glm::dot(forward, toPivot) == doctest::Approx(1.0f));
+    // Au-dessus du plancher, ou sans plancher, rien ne change.
+    CHECK(rando::camera::aboveFloor(under, pivot, -2.5f).position == under.position);
+    CHECK(rando::camera::aboveFloor(under, pivot, std::nullopt).position == under.position);
+}
+
+TEST_CASE("une cible téléportée fait couper la caméra, pas une cible qui court")
+{
+    rando::camera::CameraOrbit orbit;
+    // Aucun pas encore : rien à comparer.
+    CHECK_FALSE(rando::camera::targetJumped(orbit, {0.0f, 0.0f, 0.0f}, 5.0f));
+    orbit.lastTargetFeet = glm::vec3{0.0f};
+    // Un planeur à 6 m/s fait 10 cm par pas ; une noyade ramène à 30 m.
+    CHECK_FALSE(rando::camera::targetJumped(orbit, {0.1f, 0.0f, 0.0f}, 5.0f));
+    CHECK(rando::camera::targetJumped(orbit, {30.0f, 1.0f, 0.0f}, 5.0f));
+}

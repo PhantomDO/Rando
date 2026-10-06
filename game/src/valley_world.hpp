@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "rando/camera/third_person.hpp"
 #include "rando/traversal/traversal.hpp"
 
 #include "levain/character/walk.hpp"
@@ -52,6 +53,15 @@ constexpr glm::vec2 Promontory{70.0f, 280.0f};
 /// La vallée qui porte : la physique, les moyens de traverser, le relief qui collisionne, le lac.
 void spawnValley(flecs::world& world, const levain::terrain::Heightmap& heightmap,
                  const levain::terrain::ValleySettings& valley);
+
+/// Le bras de la caméra au démarrage, mesuré sur la heightmap : la physique ne crée le relief qu'au
+/// premier pas (les corps naissent dans sa phase, ADR-0026 de Levain), et un sphere cast lancé
+/// avant ne touche rien. Sur le versant d'un promontoire, la première pose serait dans la roche, et
+/// la première image interpolerait depuis elle. Le centre de la sphère avance par pas de 5 cm, et
+/// s'arrête dès que son dessous passe sous le relief le plus haut de son empreinte : le centre et
+/// quatre points à un rayon de lui. Sous le seul centre, la sphère s'enfoncerait de r(1 − cos θ)
+/// dans une pente θ, 5 cm à 30°.
+[[nodiscard]] camera::SphereCast heightmapArmCast(const levain::terrain::Heightmap& heightmap);
 
 /// Le joueur, une racine sans échelle (ADR-0028 de Levain), ses pieds à `feet`. Ses réglages
 /// amènent le reste : son input, son état, son endurance (le trait `With` du plugin `traversal`).
