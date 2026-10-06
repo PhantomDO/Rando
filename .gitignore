@@ -23,3 +23,6 @@ CMakeUserPresets.json
 /vcpkg/
 /vcpkg-cache/
 /vcpkg-downloads/
+
+# Les assets de test empruntés au moteur, téléchargés par son tools/fetch-assets.sh (README)
+/assets-cache/
