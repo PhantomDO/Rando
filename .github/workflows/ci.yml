@@ -199,16 +199,19 @@ jobs:
           awk -v x="$x" -v z="$z" 'BEGIN { exit !(x > 206.0 && x < 208.0 && z > 279.0 && z < 281.0) }' \
             || { echo "::error::le renard a fini en ($x, $z), hors de (206-208, 279-281)"; exit 1; }
 
+      - name: Tests
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
+
       # Format et analyse statique une seule fois : ce sont des propriétés des sources, pas
       # de la configuration de build.
       - name: Format
         if: matrix.preset == 'linux-debug'
         run: |
-          find game -name '*.cpp' -o -name '*.hpp' \
+          find game plugins tests -name '*.cpp' -o -name '*.hpp' \
             | xargs clang-format --dry-run --Werror
 
       - name: Analyse statique
         if: matrix.preset == 'linux-debug'
         run: |
-          find game -name '*.cpp' \
+          find game plugins tests -name '*.cpp' \
             | xargs clang-tidy -p build/${{ matrix.preset }} --warnings-as-errors='*'
