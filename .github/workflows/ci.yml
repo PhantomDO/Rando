@@ -149,11 +149,13 @@ jobs:
       # Les assets de test que le jeu emprunte au moteur (ADR-0029 de Levain) : le renard, les
       # textures du terrain et le ciel, par le script du moteur récupéré au configure, avec ses
       # empreintes SHA-256. Jamais Sponza, dont la licence interdit la redistribution.
+      # La clé suit le lock du moteur récupéré (ses empreintes) et la liste des préfixes : un préfixe
+      # ajouté refait un cache, au lieu de retélécharger à chaque run sans jamais l'enregistrer.
       - name: Cache des assets
         uses: actions/cache@v4
         with:
           path: assets-cache
-          key: assets-${{ hashFiles('CMakeLists.txt') }}
+          key: assets-${{ hashFiles(format('build/{0}/_deps/levain-src/tools/assets.lock', matrix.preset)) }}-fox-textures-kloofendal2k
 
       - name: Assets
         run: |
@@ -183,6 +185,12 @@ jobs:
             ./build/${{ matrix.preset }}/game/rando --walk 1,0 --steps 120 | tee rando.log
           grep -q "étapes du rendu : ombres : modèles, terrain ; opaques : modèles, terrain, herbe ; transparents : eau" rando.log \
             || { echo "::error::la vallée ne s'est pas inscrite dans le rendu"; exit 1; }
+          # Deux replis du moteur ne seraient qu'un avertissement : le terrain en couleurs unies sans
+          # ses textures, une ambiance uniforme sans le ciel. Ici, ce sont des assets oubliés.
+          ! grep -q "couleurs unies" rando.log \
+            || { echo "::error::le terrain n'a pas trouvé ses textures"; exit 1; }
+          grep -q "ciel : kloofendal_48d_partly_cloudy_puresky_2k.hdr" rando.log \
+            || { echo "::error::le ciel n'a pas été chargé"; exit 1; }
           line=$(grep -o "renard : pieds à ([-0-9., ]*), [^,]*" rando.log) \
             || { echo "::error::le jeu n'a pas rendu compte du renard"; exit 1; }
           echo "$line" | grep -q ", au sol" \

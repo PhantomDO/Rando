@@ -1,4 +1,7 @@
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <expected>
@@ -154,32 +157,64 @@ levain::scene::Transform followCamera(const glm::vec3& player)
             .rotation = glm::quatLookAt(glm::normalize(target - eye), glm::vec3{0.0f, 1.0f, 0.0f})};
 }
 
-/// Ce que le joueur demande au renard, à chaque image : la direction des axes, dans le monde (la
-/// caméra regarde vers +x : « avant » est +x, « droite » +z), la course, et le saut. Le saut se lit
-/// dans les appuis qu'aucun pas n'a encore vus (`pressedSinceLastStep`) : la marche le consomme au
-/// pas suivant.
-void steerFox(Valley& valley)
+/// Place la caméra derrière le joueur, **par référence** : un `set` remettrait son état précédent à
+/// jour, et le rendu ne l'interpolerait plus entre deux pas (ADR-0016 de Levain).
+void followPlayer(flecs::entity camera, flecs::entity player)
 {
-    const auto& input = valley.app.world.get<levain::app::PlayerInput>();
-    const Controls& controls = valley.controls;
-    auto& walk = valley.player.get_mut<levain::character::WalkInput>();
-    walk.direction = valley.options.walk.value_or(
-        glm::vec2{levain::input::axisValue(input.state, controls.moveForward),
-                  levain::input::axisValue(input.state, controls.moveRight)});
-    walk.run = levain::input::actionHeld(input.state, controls.sprint);
-    walk.jump = levain::app::pressedSinceLastStep(input, controls.jump);
+    camera.get_mut<levain::scene::Transform>() =
+        followCamera(player.get<levain::scene::Transform>().position);
 }
 
-/// Les bilans du jeu, lus par la CI : où sont les pieds du renard, et sur quoi.
+/// Ce que le joueur demande au renard, à chaque image : la direction des axes, dans le monde (la
+/// caméra regarde vers +x : « avant » est +x, « droite » +z), ou celle de `--walk` ; la course ; et
+/// le saut, lu dans les appuis qu'aucun pas n'a encore vus (`pressedSinceLastStep`) : la marche le
+/// consomme au pas suivant, et le moteur l'oublie à la fin de ce pas. Ni perdu, ni doublé.
+levain::character::WalkInput walkInputOf(const levain::app::PlayerInput& input,
+                                         const Controls& controls,
+                                         std::optional<glm::vec2> scripted)
+{
+    return {.direction = scripted.value_or(
+                glm::vec2{levain::input::axisValue(input.state, controls.moveForward),
+                          levain::input::axisValue(input.state, controls.moveRight)}),
+            .run = levain::input::actionHeld(input.state, controls.sprint),
+            .jump = levain::app::pressedSinceLastStep(input, controls.jump)};
+}
+
+/// Le nom d'un état du sol, pour le journal.
+std::string_view groundName(levain::physics::GroundState state)
+{
+    switch (state)
+    {
+    case levain::physics::GroundState::OnGround:
+        return "au sol";
+    case levain::physics::GroundState::OnSteepGround:
+        return "sur une pente trop raide";
+    case levain::physics::GroundState::NotSupported:
+        return "sans appui";
+    case levain::physics::GroundState::InAir:
+        break;
+    }
+    return "en l'air";
+}
+
+/// Les bilans du jeu, lus par la CI : où sont les pieds du renard, et sur quoi ; ce que le terrain
+/// et l'herbe ont dessiné. L'état du personnage n'existe qu'après le premier pas de physique : une
+/// boucle trop courte n'en a pas.
 bool finishValley(const Valley& valley)
 {
     const glm::vec3 feet = valley.player.get<levain::scene::Transform>().position;
-    const auto& state = valley.player.get<levain::physics::CharacterState>();
-    levain::core::log(
-        "rando", levain::core::LogLevel::Info,
-        "renard : pieds à ({:.2f}, {:.2f}, {:.2f}), {}, {:.2f} m/s", feet.x, feet.y, feet.z,
-        state.ground.state == levain::physics::GroundState::OnGround ? "au sol" : "pas au sol",
-        glm::length(state.velocity));
+    const auto* state = valley.player.try_get<levain::physics::CharacterState>();
+    levain::core::log("rando", levain::core::LogLevel::Info,
+                      "renard : pieds à ({:.2f}, {:.2f}, {:.2f}), {}, {:.2f} m/s", feet.x, feet.y,
+                      feet.z, state ? groundName(state->ground.state) : "sans personnage",
+                      state ? glm::length(state->velocity) : 0.0f);
+    const auto perFrame = [&valley](std::uint64_t count)
+    { return static_cast<double>(count) / std::max(valley.app.frameCount, 1); };
+    levain::core::log("rando", levain::core::LogLevel::Info,
+                      "terrain, par image : {:.1f} parcelles dessinées et {:.0f} triangles ; "
+                      "herbe : {:.0f} brins demandés",
+                      perFrame(valley.terrainCamera.drawn),
+                      perFrame(valley.terrainCamera.triangles), perFrame(valley.grassStats.blades));
     return true;
 }
 
@@ -244,14 +279,7 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
             .add<levain::scene::PreviousTransform>();
     world.system("FollowPlayer")
         .kind<levain::scene::PostPhysics>()
-        .run(
-            [camera, player](flecs::iter&)
-            {
-                // Par référence : un `set` remettrait l'état précédent à jour, et le rendu ne
-                // l'interpolerait plus (ADR-0016 de Levain).
-                camera.get_mut<levain::scene::Transform>() =
-                    followCamera(player.get<levain::scene::Transform>().position);
-            });
+        .run([camera, player](flecs::iter&) { followPlayer(camera, player); });
 
     // Le terrain, le lac et l'herbe : des plugins du moteur, inscrits dans le rendu d'`app`. Un
     // envoi qui échoue est soumis quand même (`submitAbandonedUpload`, models.hpp de Levain).
@@ -303,12 +331,34 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     levain::core::log("rando", levain::core::LogLevel::Info, "étapes du rendu : {}",
                       levain::render::describeStages(app.renderer.stages));
     return levain::app::FrameHooks{
-        .frame = [valley](levain::app::App&) { steerFox(*valley); },
+        .frame =
+            [valley](levain::app::App& app)
+        {
+            valley->player.get_mut<levain::character::WalkInput>() = walkInputOf(
+                app.world.get<levain::app::PlayerInput>(), valley->controls, valley->options.walk);
+        },
         .record = nullptr,
         .finish = [valley](levain::app::App&) { return finishValley(*valley); },
-        // Le renard joue le mouvement du joueur : il marche quand le joueur marche.
-        .motionOf = [valley](const levain::assets::AssetId&, double)
-        { return valley->player.get<levain::animation::CharacterMotion>(); }};
+        // Le renard joue le mouvement du joueur : il marche quand le joueur marche. Tout autre
+        // modèle animé reste au repos.
+        .motionOf =
+            [valley, fox = fox->id](const levain::assets::AssetId& model, double)
+        {
+            return model == fox ? valley->player.get<levain::animation::CharacterMotion>()
+                                : levain::animation::CharacterMotion{};
+        }};
+}
+
+/// Deux nombres finis séparés par une virgule, « 1,0 ». Le piège : `from_chars` lit aussi « nan »
+/// et « inf », que la physique ne doit jamais recevoir.
+std::optional<glm::vec2> parsePair(std::string_view text)
+{
+    const std::optional<glm::vec3> triple = levain::app::parseVector(std::string{text} + ",0");
+    if (!triple || !std::isfinite(triple->x) || !std::isfinite(triple->y))
+    {
+        return std::nullopt;
+    }
+    return glm::vec2{triple->x, triple->y};
 }
 
 /// Les options communes et celles du jeu, dans n'importe quel ordre. Vide si elles sont invalides.
@@ -333,12 +383,12 @@ std::optional<RandoOptions> parseOptions(std::span<char* const> arguments,
         {
             return std::nullopt;
         }
-        const std::optional<glm::vec3> pair = levain::app::parseVector(std::string{value} + ",0");
+        const std::optional<glm::vec2> pair = parsePair(value);
         if (!pair)
         {
             return std::nullopt;
         }
-        (name == "--walk" ? options.walk : options.start) = glm::vec2{pair->x, pair->y};
+        (name == "--walk" ? options.walk : options.start) = *pair;
     }
     return options;
 }
