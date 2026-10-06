@@ -13,7 +13,7 @@ set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 include(FetchContent)
 FetchContent_Declare(levain
     GIT_REPOSITORY https://github.com/PhantomDO/Levain.git
-    GIT_TAG 5f04d8634481bf75a59d7aaa9656bc26a15bf9d4) # main après Levain#201 (clôture de M4.6, ordre des liens)
+    GIT_TAG 873a6e30b3d41105751a2fbcd47c6f7d5890ea0d) # main après Levain#304 (le module app, ADR-0029)
 FetchContent_MakeAvailable(levain)
 
 add_compile_options(-pedantic-errors -Wall -Wextra -Werror)

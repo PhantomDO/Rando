@@ -146,6 +146,22 @@ jobs:
           cmake --preset ${{ matrix.preset }}
           cmake --build --preset ${{ matrix.preset }}
 
+      # Les assets de test que le jeu emprunte au moteur (ADR-0029 de Levain) : le renard, les
+      # textures du terrain et le ciel, par le script du moteur récupéré au configure, avec ses
+      # empreintes SHA-256. Jamais Sponza, dont la licence interdit la redistribution.
+      # La clé suit le lock du moteur récupéré (ses empreintes) et la liste des préfixes : un préfixe
+      # ajouté refait un cache, au lieu de retélécharger à chaque run sans jamais l'enregistrer.
+      - name: Cache des assets
+        uses: actions/cache@v4
+        with:
+          path: assets-cache
+          key: assets-${{ hashFiles(format('build/{0}/_deps/levain-src/tools/assets.lock', matrix.preset)) }}-fox-textures-kloofendal2k
+
+      - name: Assets
+        run: |
+          ./build/${{ matrix.preset }}/_deps/levain-src/tools/fetch-assets.sh assets-cache \
+            Models/Fox Textures/ HDRIs/kloofendal_48d_partly_cloudy_puresky_2k.hdr
+
       # Garde-fou : un preset dont les drapeaux se seraient perdus compilerait sans
       # instrumentation, et le job resterait vert sans avoir rien vérifié.
       - name: Vérifier l'instrumentation
@@ -156,18 +172,32 @@ jobs:
               || { echo "::error::$symbol absent : le jeu n'est pas instrumenté"; exit 1; }
           done
 
-      # Le runner n'a pas d'écran : SDL passe par son pilote « offscreen ». Même lancement que le
-      # sandbox du moteur : --seconds 3, timeout comme filet, et une boucle d'au moins une seconde
-      # exigée (règle n°7 de Levain).
+      # Le runner n'a pas d'écran : SDL passe par son pilote « offscreen ». Le renard marche vers le
+      # lac pendant 120 pas de simulation, un par image : ce qu'il fait ne dépend plus du runner.
+      # Parti de (204, 280) sur le fond de la vallée, il doit avoir marché vers +x, au sol, sans
+      # dévier : mesuré (206,91 ; −0,05 ; 280,02), comme la vue `hike` du sandbox du moteur.
       - name: Lancer le jeu
         env:
           SDL_VIDEO_DRIVER: offscreen
         run: |
           set -euo pipefail
-          timeout --foreground --preserve-status -k 10 60 \
-            ./build/${{ matrix.preset }}/game/rando --seconds 3 | tee rando.log
-          grep -Eq "boucle arrêtée après ([1-9]|[0-9]{2,})\.[0-9] s" rando.log \
-            || { echo "::error::la boucle du jeu a tourné moins d'une seconde"; exit 1; }
+          timeout --foreground --preserve-status -k 10 300 \
+            ./build/${{ matrix.preset }}/game/rando --walk 1,0 --steps 120 | tee rando.log
+          grep -q "étapes du rendu : ombres : modèles, terrain ; opaques : modèles, terrain, herbe ; transparents : eau" rando.log \
+            || { echo "::error::la vallée ne s'est pas inscrite dans le rendu"; exit 1; }
+          # Deux replis du moteur ne seraient qu'un avertissement : le terrain en couleurs unies sans
+          # ses textures, une ambiance uniforme sans le ciel. Ici, ce sont des assets oubliés.
+          ! grep -q "couleurs unies" rando.log \
+            || { echo "::error::le terrain n'a pas trouvé ses textures"; exit 1; }
+          grep -q "ciel : kloofendal_48d_partly_cloudy_puresky_2k.hdr" rando.log \
+            || { echo "::error::le ciel n'a pas été chargé"; exit 1; }
+          line=$(grep -o "renard : pieds à ([-0-9., ]*), [^,]*" rando.log) \
+            || { echo "::error::le jeu n'a pas rendu compte du renard"; exit 1; }
+          echo "$line" | grep -q ", au sol" \
+            || { echo "::error::le renard n'est pas au sol : $line"; exit 1; }
+          read -r x y z <<<"$(echo "$line" | grep -o "([-0-9., ]*)" | tr -d '()' | tr ',' ' ')"
+          awk -v x="$x" -v z="$z" 'BEGIN { exit !(x > 206.0 && x < 208.0 && z > 279.0 && z < 281.0) }' \
+            || { echo "::error::le renard a fini en ($x, $z), hors de (206-208, 279-281)"; exit 1; }
 
       # Format et analyse statique une seule fois : ce sont des propriétés des sources, pas
       # de la configuration de build.
