@@ -1,8 +1,15 @@
+# La vallée sans son rendu : le relief qui porte, le lac et le joueur, que le jeu et ses tests
+# partagent (ADR-0031 de Levain).
+add_library(rando_valley STATIC src/valley_world.cpp)
+target_include_directories(rando_valley PUBLIC src)
+target_link_libraries(rando_valley PUBLIC
+    levain::physics levain::scene plugin::character plugin::terrain plugin::traversal plugin::water)
+
 add_executable(rando src/main.cpp)
 target_link_libraries(rando PRIVATE
     levain::animation levain::app levain::assets levain::core levain::input levain::physics
     levain::platform levain::render levain::scene
-    plugin::camera plugin::character plugin::grass plugin::terrain plugin::water)
+    plugin::camera plugin::character plugin::grass plugin::terrain plugin::water rando_valley)
 
 # Les fichiers du jeu, lus dans le dépôt : ses liaisons d'entrée (data/), et les assets de test qu'il
 # emprunte au moteur, téléchargés dans assets-cache/ par le script de Levain (README) : le renard, les
