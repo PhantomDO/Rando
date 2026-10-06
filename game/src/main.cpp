@@ -7,6 +7,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <print>
@@ -18,6 +19,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
+
+#include "rando/camera/third_person.hpp"
 
 #include "levain/animation/animator.hpp"
 #include "levain/app/app.hpp"
@@ -31,9 +34,14 @@
 #include "levain/input/state.hpp"
 #include "levain/physics/character.hpp"
 #include "levain/physics/physics.hpp"
+#include "levain/physics/physics_world.hpp"
+#include "levain/platform/input.hpp"
+#include "levain/platform/window.hpp"
 #include "levain/render/stages.hpp"
+#include "levain/scene/camera_control.hpp"
 #include "levain/scene/components.hpp"
 #include "levain/scene/scene.hpp"
+#include "levain/scene/transform.hpp"
 #include "levain/terrain/collision.hpp"
 #include "levain/terrain/heightmap.hpp"
 #include "levain/terrain/terrain_pass.hpp"
@@ -65,6 +73,13 @@ struct RandoOptions
     /// `--start x,z` : où le renard commence, au lieu du fond de la vallée à l'ouest du lac. Ses
     /// pieds se posent sur le relief.
     std::optional<glm::vec2> start;
+    /// `--orbit N` : la caméra tourne autour du renard à N°/s, et son tangage va et vient d'une
+    /// borne à l'autre, au lieu de la souris. Le regard scripté du critère de M6.4, compté en pas :
+    /// à utiliser avec `--steps` (ADR-0030 de Levain).
+    std::optional<float> orbitDegreesPerSecond;
+    /// `--camera-collision off` : le bras traverse la roche. Seulement pour prouver que la mesure
+    /// de la CI mord (règle n°7 de Levain).
+    bool cameraCollides = true;
 };
 
 /// Les actions et les axes que le jeu lit, résolus une fois par leurs noms. Un nom absent de
@@ -76,6 +91,12 @@ struct Controls
     int moveForward = 0;
     int sprint = 0;
     int jump = 0;
+    int lookRightMouse = 0;
+    int lookUpMouse = 0;
+    int lookRightPad = 0;
+    int lookUpPad = 0;
+    int freeMouse = 0;
+    int captureMouse = 0;
 };
 
 levain::core::Result<Controls> controlsOf(const levain::input::Bindings& bindings)
@@ -102,15 +123,30 @@ levain::core::Result<Controls> controlsOf(const levain::input::Bindings& binding
     auto moveForward = axis("move_forward");
     auto sprint = action("sprint");
     auto jump = action("jump");
-    for (const auto* found : {&moveRight, &moveForward, &sprint, &jump})
+    auto lookRightMouse = axis("look_right_mouse");
+    auto lookUpMouse = axis("look_up_mouse");
+    auto lookRightPad = axis("look_right_pad");
+    auto lookUpPad = axis("look_up_pad");
+    auto freeMouse = action("free_mouse");
+    auto captureMouse = action("capture_mouse");
+    for (const auto* found : {&moveRight, &moveForward, &sprint, &jump, &lookRightMouse,
+                              &lookUpMouse, &lookRightPad, &lookUpPad, &freeMouse, &captureMouse})
     {
         if (!*found)
         {
             return std::unexpected(found->error());
         }
     }
-    return Controls{
-        .moveRight = *moveRight, .moveForward = *moveForward, .sprint = *sprint, .jump = *jump};
+    return Controls{.moveRight = *moveRight,
+                    .moveForward = *moveForward,
+                    .sprint = *sprint,
+                    .jump = *jump,
+                    .lookRightMouse = *lookRightMouse,
+                    .lookUpMouse = *lookUpMouse,
+                    .lookRightPad = *lookRightPad,
+                    .lookUpPad = *lookUpPad,
+                    .freeMouse = *freeMouse,
+                    .captureMouse = *captureMouse};
 }
 
 /// Le monde du jeu, gardé par ses points d'accroche (ADR-0029 de Levain) : la vallée et ses
@@ -129,6 +165,13 @@ struct Valley
     levain::terrain::TerrainStats terrainShadows;
     levain::grass::GrassStats grassStats;
     flecs::entity player;
+    flecs::entity camera;
+    /// La souris tourne la caméra tant qu'elle est capturée (ADR-0030 de Levain).
+    bool mouseCaptured = false;
+    /// Le critère de M6.4 : la plus petite hauteur d'un point du plan proche au-dessus du relief,
+    /// sur toutes les poses mesurées, et leur nombre.
+    float minimumMargin = std::numeric_limits<float>::infinity();
+    int measuredPoses = 0;
 };
 
 /// Où le renard commence : sur le fond plat de la vallée, 1,4 rayon à l'ouest du lac, face à lui.
@@ -146,38 +189,136 @@ glm::quat facingPlusX()
     return glm::angleAxis(-glm::half_pi<float>(), glm::vec3{0.0f, 1.0f, 0.0f});
 }
 
-/// La caméra qui suit le joueur à distance fixe, sans collision : celle de M6.3, en attendant la
-/// caméra à la troisième personne (#2). 3,5 m en arrière (−x), 1,6 m au-dessus, le regard sur son
-/// dos.
-levain::scene::Transform followCamera(const glm::vec3& player)
-{
-    const glm::vec3 eye = player + glm::vec3{-3.5f, 1.6f, 0.0f};
-    const glm::vec3 target = player + glm::vec3{0.0f, 0.5f, 0.0f};
-    return {.position = eye,
-            .rotation = glm::quatLookAt(glm::normalize(target - eye), glm::vec3{0.0f, 1.0f, 0.0f})};
-}
-
-/// Place la caméra derrière le joueur, **par référence** : un `set` remettrait son état précédent à
-/// jour, et le rendu ne l'interpolerait plus entre deux pas (ADR-0016 de Levain).
-void followPlayer(flecs::entity camera, flecs::entity player)
-{
-    camera.get_mut<levain::scene::Transform>() =
-        followCamera(player.get<levain::scene::Transform>().position);
-}
-
-/// Ce que le joueur demande au renard, à chaque image : la direction des axes, dans le monde (la
-/// caméra regarde vers +x : « avant » est +x, « droite » +z), ou celle de `--walk` ; la course ; et
-/// le saut, lu dans les appuis qu'aucun pas n'a encore vus (`pressedSinceLastStep`) : la marche le
-/// consomme au pas suivant, et le moteur l'oublie à la fin de ce pas. Ni perdu, ni doublé.
+/// Ce que le joueur demande au renard, à chaque image : la direction des axes **tournée selon le
+/// lacet de la caméra** (« avant » est là où elle regarde), ou celle de `--walk`, une direction du
+/// monde ; la course ; et le saut, lu dans les appuis qu'aucun pas n'a encore vus
+/// (`pressedSinceLastStep`) : la marche le consomme au pas suivant, et le moteur l'oublie à la fin
+/// de ce pas. Ni perdu, ni doublé. La marche borne elle-même la longueur de la direction.
 levain::character::WalkInput walkInputOf(const levain::app::PlayerInput& input,
-                                         const Controls& controls,
+                                         const Controls& controls, float cameraYawDegrees,
                                          std::optional<glm::vec2> scripted)
 {
-    return {.direction = scripted.value_or(
-                glm::vec2{levain::input::axisValue(input.state, controls.moveForward),
-                          levain::input::axisValue(input.state, controls.moveRight)}),
+    const levain::scene::HorizontalBasis basis =
+        levain::scene::horizontalBasisFrom(cameraYawDegrees);
+    const glm::vec3 axes =
+        (basis.forward * levain::input::axisValue(input.state, controls.moveForward)) +
+        (basis.right * levain::input::axisValue(input.state, controls.moveRight));
+    return {.direction = scripted.value_or(glm::vec2{axes.x, axes.z}),
             .run = levain::input::actionHeld(input.state, controls.sprint),
             .jump = levain::app::pressedSinceLastStep(input, controls.jump)};
+}
+
+/// Le regard scripté de `--orbit` : le lacet à vitesse constante, et le tangage qui va et vient
+/// d'une borne à l'autre en 7 s. Les deux périodes ne se calent pas l'une sur l'autre : toutes les
+/// directions du bras passent contre la pente, à tous les tangages, la caméra basse comprise, le
+/// pire cas (ADR-0030 de Levain).
+glm::vec2 scriptedLook(float yawDegreesPerSecond, float seconds)
+{
+    constexpr float PitchPeriodSeconds = 7.0f;
+    constexpr float PitchDegreesPerSecond = 55.0f;
+    return {yawDegreesPerSecond,
+            PitchDegreesPerSecond * std::cos(glm::two_pi<float>() * seconds / PitchPeriodSeconds)};
+}
+
+/// Le regard du joueur : la souris seulement capturée (libre, on s'en sert hors de la fenêtre), le
+/// stick droit toujours.
+glm::vec2 lookOf(const levain::app::PlayerInput& input, const Controls& controls,
+                 bool mouseCaptured)
+{
+    const glm::vec2 pad{levain::input::axisValue(input.state, controls.lookRightPad),
+                        levain::input::axisValue(input.state, controls.lookUpPad)};
+    const glm::vec2 mouse{levain::input::axisValue(input.state, controls.lookRightMouse),
+                          levain::input::axisValue(input.state, controls.lookUpMouse)};
+    return pad + (mouseCaptured ? mouse : glm::vec2{0.0f});
+}
+
+/// La souris est capturée à la première image ; Échap la libère, un clic la reprend.
+// ponytail: dans le navigateur, le *pointer lock* ne s'obtient que dans un geste du joueur : la
+// première capture y échouera en silence, et la caméra tournera au survol jusqu'au premier clic. À
+// régler avec Rando dans le navigateur.
+void captureMouse(Valley& valley, const levain::app::PlayerInput& input)
+{
+    const Controls& controls = valley.controls;
+    bool wanted = valley.mouseCaptured;
+    if (valley.app.frameCount == 0 ||
+        levain::input::actionPressed(input.state, controls.captureMouse))
+    {
+        wanted = true;
+    }
+    if (levain::input::actionPressed(input.state, controls.freeMouse))
+    {
+        wanted = false;
+    }
+    if (wanted != valley.mouseCaptured)
+    {
+        levain::platform::setMouseCaptured(valley.app.window, wanted);
+        valley.mouseCaptured = wanted;
+    }
+}
+
+/// Ce que le joueur demande, à chaque image : la souris, la caméra (son regard, et la forme de
+/// l'image, dont dépend la sphère de son bras), puis le renard.
+void steer(Valley& valley)
+{
+    const auto& input = valley.app.world.get<levain::app::PlayerInput>();
+    captureMouse(valley, input);
+    const levain::platform::PixelSize pixels = levain::platform::windowPixelSize(valley.app.window);
+    if (pixels.width > 0 && pixels.height > 0)
+    {
+        valley.camera.get_mut<rando::camera::ThirdPersonCamera>().aspectRatio =
+            static_cast<float>(pixels.width) / static_cast<float>(pixels.height);
+    }
+    valley.camera.get_mut<rando::camera::OrbitInput>().look =
+        valley.options.orbitDegreesPerSecond
+            ? scriptedLook(*valley.options.orbitDegreesPerSecond,
+                           static_cast<float>(valley.app.frameCount) *
+                               valley.app.fixedStep.stepSeconds)
+            : lookOf(input, valley.controls, valley.mouseCaptured);
+    valley.player.get_mut<levain::character::WalkInput>() = walkInputOf(
+        input, valley.controls, valley.camera.get<rando::camera::CameraOrbit>().yawDegrees,
+        valley.options.walk);
+}
+
+/// La marge au relief d'une pose de la caméra : la hauteur, au-dessus du terrain, du centre et des
+/// quatre coins de son plan proche. Négative, l'image entre dans la roche. Le relief de la vallée
+/// n'a ni surplomb ni grotte : passer sous lui, c'est traverser la roche.
+float marginOf(const levain::scene::Transform& pose, const levain::app::CameraLens& lens,
+               float aspectRatio, const levain::terrain::Heightmap& heightmap)
+{
+    const float halfHeight =
+        lens.nearPlane * std::tan(glm::radians(lens.verticalFovDegrees) / 2.0f);
+    const float halfWidth = halfHeight * aspectRatio;
+    float margin = std::numeric_limits<float>::infinity();
+    for (const glm::vec3 corner : {glm::vec3{0.0f, 0.0f, -lens.nearPlane},
+                                   glm::vec3{-halfWidth, -halfHeight, -lens.nearPlane},
+                                   glm::vec3{halfWidth, -halfHeight, -lens.nearPlane},
+                                   glm::vec3{-halfWidth, halfHeight, -lens.nearPlane},
+                                   glm::vec3{halfWidth, halfHeight, -lens.nearPlane}})
+    {
+        const glm::vec3 point = pose.position + (pose.rotation * corner);
+        margin = std::min(
+            margin, point.y - levain::terrain::heightAt(heightmap, glm::vec2{point.x, point.z}));
+    }
+    return margin;
+}
+
+/// Le critère de M6.4, mesuré à chaque pas : la marge au relief de la caméra aux poses qu'une image
+/// verrait entre le pas précédent et celui-ci (fractions 0, ¼, ½ et ¾), interpolées comme le rendu
+/// les interpole. Avec `--steps`, le rendu ne voit jamais que la première ; c'est entre deux pas
+/// qu'un bras qui rentre d'un coup passerait sous une arête (ADR-0030 de Levain).
+void measureMargin(Valley& valley)
+{
+    const auto& lens = valley.camera.get<levain::app::CameraLens>();
+    const float aspect = valley.camera.get<rando::camera::ThirdPersonCamera>().aspectRatio;
+    const auto& previous = valley.camera.get<levain::scene::PreviousTransform>().transform;
+    const auto& current = valley.camera.get<levain::scene::Transform>();
+    for (const float fraction : {0.0f, 0.25f, 0.5f, 0.75f})
+    {
+        valley.minimumMargin = std::min(
+            valley.minimumMargin, marginOf(levain::scene::interpolate(previous, current, fraction),
+                                           lens, aspect, valley.heightmap));
+        ++valley.measuredPoses;
+    }
 }
 
 /// Le nom d'un état du sol, pour le journal.
@@ -202,6 +343,10 @@ std::string_view groundName(levain::physics::GroundState state)
 /// boucle trop courte n'en a pas.
 bool finishValley(const Valley& valley)
 {
+    // Lu par la CI : le critère de M6.4.
+    levain::core::log("rando", levain::core::LogLevel::Info,
+                      "caméra : marge minimale au relief {:.3f} m sur {} poses",
+                      valley.minimumMargin, valley.measuredPoses);
     const glm::vec3 feet = valley.player.get<levain::scene::Transform>().position;
     const auto* state = valley.player.try_get<levain::physics::CharacterState>();
     levain::core::log("rando", levain::core::LogLevel::Info,
@@ -270,16 +415,24 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     // Par flecs::Parent, comme toute la hiérarchie (ADR-0015 de Levain) : le renard suit le joueur.
     fox->root.set(flecs::Parent{player});
 
-    // La caméra : une entité qui porte un objectif, que le rendu interpole entre deux pas.
+    // La caméra à la troisième personne (ADR-0030 de Levain), son plan proche à 0,2 m pour qu'elle
+    // puisse approcher la roche. Elle part du bout de son bras, derrière le renard qui regarde vers
+    // +x, contre la roche s'il y en a : posée sur ses pieds, la première image interpolerait depuis
+    // l'intérieur du sol.
+    world.import<rando::camera::ThirdPersonCameraModule>();
+    const rando::camera::ThirdPersonCamera cameraSettings{.target = player.id(),
+                                                          .collides = options.cameraCollides};
+    const levain::app::CameraLens lens{
+        .verticalFovDegrees = 60.0f, .nearPlane = 0.2f, .farPlane = 1000.0f};
+    rando::camera::CameraOrbit orbit{.yawDegrees = rando::camera::yawDegreesOf(facingPlusX())};
+    const levain::scene::Transform cameraStart = rando::camera::stepCamera(
+        cameraSettings, orbit, {},
+        rando::camera::nearPlaneRadius(lens, cameraSettings.aspectRatio) +
+            cameraSettings.probeMargin,
+        {.feet = start, .yawDegrees = orbit.yawDegrees, .velocity = {}},
+        rando::camera::armSphereCast(world.get<levain::physics::PhysicsWorld>()), 0.0f);
     const flecs::entity camera =
-        world.entity("camera")
-            .set(followCamera(start))
-            .set(levain::app::CameraLens{
-                .verticalFovDegrees = 60.0f, .nearPlane = 0.5f, .farPlane = 1000.0f})
-            .add<levain::scene::PreviousTransform>();
-    world.system("FollowPlayer")
-        .kind<levain::scene::PostPhysics>()
-        .run([camera, player](flecs::iter&) { followPlayer(camera, player); });
+        world.entity("camera").set(cameraSettings).set(orbit).set(lens).set(cameraStart);
 
     // Le terrain, le lac et l'herbe : des plugins du moteur, inscrits dans le rendu d'`app`. Un
     // envoi qui échoue est soumis quand même (`submitAbandonedUpload`, models.hpp de Levain).
@@ -313,17 +466,28 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     upload->close();
     device.executeCommandList(upload);
 
-    const auto valley = std::make_shared<Valley>(Valley{.app = app,
-                                                        .options = options,
-                                                        .controls = *controls,
-                                                        .heightmap = std::move(heightmap),
-                                                        .terrain = std::move(*terrain),
-                                                        .water = std::move(*water),
-                                                        .grass = std::move(*grass),
-                                                        .terrainCamera = {},
-                                                        .terrainShadows = {},
-                                                        .grassStats = {},
-                                                        .player = player});
+    const auto valley =
+        std::make_shared<Valley>(Valley{.app = app,
+                                        .options = options,
+                                        .controls = *controls,
+                                        .heightmap = std::move(heightmap),
+                                        .terrain = std::move(*terrain),
+                                        .water = std::move(*water),
+                                        .grass = std::move(*grass),
+                                        .terrainCamera = {},
+                                        .terrainShadows = {},
+                                        .grassStats = {},
+                                        .player = player,
+                                        .camera = camera,
+                                        .mouseCaptured = false,
+                                        .minimumMargin = std::numeric_limits<float>::infinity(),
+                                        .measuredPoses = 0});
+    // La mesure du critère, après la caméra dans la même phase : déclarée après l'import de son
+    // module, elle passe après son système (l'ordre des déclarations, README de scene). Un
+    // pointeur nu : les points d'accroche gardent la vallée, et meurent avant le monde.
+    world.system("MeasureCameraMargin")
+        .kind<levain::scene::PostPhysics>()
+        .run([valley = valley.get()](flecs::iter&) { measureMargin(*valley); });
     levain::terrain::addTerrainPasses(app.renderer.stages, valley->terrain, valley->heightmap,
                                       valley->terrainCamera, valley->terrainShadows);
     levain::grass::addGrassPasses(app.renderer.stages, valley->grass, valley->grassStats);
@@ -331,12 +495,7 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     levain::core::log("rando", levain::core::LogLevel::Info, "étapes du rendu : {}",
                       levain::render::describeStages(app.renderer.stages));
     return levain::app::FrameHooks{
-        .frame =
-            [valley](levain::app::App& app)
-        {
-            valley->player.get_mut<levain::character::WalkInput>() = walkInputOf(
-                app.world.get<levain::app::PlayerInput>(), valley->controls, valley->options.walk);
-        },
+        .frame = [valley](levain::app::App&) { steer(*valley); },
         .record = nullptr,
         .finish = [valley](levain::app::App&) { return finishValley(*valley); },
         // Le renard joue le mouvement du joueur : il marche quand le joueur marche. Tout autre
@@ -379,7 +538,26 @@ std::optional<RandoOptions> parseOptions(std::span<char* const> arguments,
         {
             continue;
         }
-        if (use == levain::app::OptionUse::Invalid || (name != "--walk" && name != "--start"))
+        if (use == levain::app::OptionUse::Invalid)
+        {
+            return std::nullopt;
+        }
+        if (name == "--camera-collision" && (value == "on" || value == "off"))
+        {
+            options.cameraCollides = value == "on";
+            continue;
+        }
+        if (name == "--orbit")
+        {
+            const std::optional<double> speed = levain::app::parsePositive(value);
+            if (!speed)
+            {
+                return std::nullopt;
+            }
+            options.orbitDegreesPerSecond = static_cast<float>(*speed);
+            continue;
+        }
+        if (name != "--walk" && name != "--start")
         {
             return std::nullopt;
         }
@@ -416,7 +594,9 @@ int main(int argc, char** argv)
             parseOptions(std::span{argv, static_cast<std::size_t>(argc)}, settings);
         if (!options)
         {
-            std::println(stderr, "usage : rando {} [--walk x,z] [--start x,z]",
+            std::println(stderr,
+                         "usage : rando {} [--walk x,z] [--start x,z] [--orbit degrés/s] "
+                         "[--camera-collision on|off]",
                          levain::app::CommonOptionsUsage);
             return 2;
         }

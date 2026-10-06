@@ -1,8 +1,8 @@
 add_executable(rando src/main.cpp)
 target_link_libraries(rando PRIVATE
     levain::animation levain::app levain::assets levain::core levain::input levain::physics
-    levain::render levain::scene
-    plugin::character plugin::grass plugin::terrain plugin::water)
+    levain::platform levain::render levain::scene
+    plugin::camera plugin::character plugin::grass plugin::terrain plugin::water)
 
 # Les fichiers du jeu, lus dans le dépôt : ses liaisons d'entrée (data/), et les assets de test qu'il
 # emprunte au moteur, téléchargés dans assets-cache/ par le script de Levain (README) : le renard, les

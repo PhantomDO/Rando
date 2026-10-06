@@ -199,6 +199,38 @@ jobs:
           awk -v x="$x" -v z="$z" 'BEGIN { exit !(x > 206.0 && x < 208.0 && z > 279.0 && z < 281.0) }' \
             || { echo "::error::le renard a fini en ($x, $z), hors de (206-208, 279-281)"; exit 1; }
 
+      # Le critère de M6.4 (ADR-0030 de Levain) : la caméra ne traverse jamais la roche en longeant
+      # une paroi de la vallée. Le renard longe le pied du versant ouest pendant 5 s, la caméra fait
+      # un tour toutes les 2 s, et son tangage va d'une borne à l'autre en 7 s, deux périodes qui ne
+      # se calent pas : toutes les directions du bras passent contre la pente, à tous les tangages. Le
+      # jeu mesure, à chaque pas et aux poses d'entre deux pas, la hauteur des coins du plan proche
+      # au-dessus du relief. Mesuré en local : 0,258 m avec la collision, −1,702 m sans. Le contrôle doit mordre : collision coupée, la caméra doit entrer dans la roche,
+      # sinon le scénario ne longe pas assez la paroi pour prouver quoi que ce soit (règle n°7 de
+      # Levain). En Release : sous lavapipe, un pas de Debug coûte près d'une demi-seconde.
+      - name: La caméra ne traverse pas la roche
+        if: matrix.preset == 'linux-release'
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          set -euo pipefail
+          for collision in on off; do
+            timeout --foreground --preserve-status -k 10 300 \
+              ./build/${{ matrix.preset }}/game/rando --start 176,250 --walk 0,1 --orbit 180 \
+              --steps 300 --camera-collision $collision | tee camera-$collision.log
+            margin=$(sed -nE 's/.*caméra : marge minimale au relief (-?[0-9.]+) m sur ([0-9]+) poses.*/\1 \2/p' \
+              camera-$collision.log)
+            [ -n "$margin" ] || { echo "::error::le jeu n'a pas mesuré la caméra ($collision)"; exit 1; }
+            read -r metres poses <<<"$margin"
+            [ "$poses" -ge 1200 ] || { echo "::error::$poses poses mesurées, 1200 attendues"; exit 1; }
+            if [ "$collision" = on ]; then
+              awk -v m="$metres" 'BEGIN { exit !(m >= 0.02) }' \
+                || { echo "::error::la caméra est passée à $metres m du relief (2 cm au moins)"; exit 1; }
+            else
+              awk -v m="$metres" 'BEGIN { exit !(m < 0) }' \
+                || { echo "::error::sans collision, la caméra reste hors de la roche ($metres m) : le scénario ne prouve rien"; exit 1; }
+            fi
+          done
+
       - name: Tests
         run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
 
