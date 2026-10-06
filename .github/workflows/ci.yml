@@ -129,11 +129,17 @@ jobs:
       # nvrhi + flecs + doctest, contre 23 s de compilation à froid (journal, M0.2).
       # ports/ fait partie de la clé : un port overlay modifié change l'ABI du paquet, et un
       # cache figé sous l'ancienne clé le ferait recompiler à chaque exécution.
+      # restore-keys : un manifeste modifié repart du cache du manifeste précédent. vcpkg ne reprend
+      # une archive que si l'ABI de son paquet n'a pas changé : il ne compile que ce qui manque, au
+      # lieu de tout (25 à 37 min par job quand Jolt est arrivé, #6). Les archives périmées restent
+      # dans le cache : il grossit à chaque changement du manifeste (891 Mo après #6). Le cache d'une
+      # PR n'est visible que d'elle-même : les PR empilées au-dessus repartent de celui de main.
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: vcpkg-cache
           key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
+          restore-keys: vcpkg-${{ env.VCPKG_TAG }}-
 
       # vcpkg refuse de démarrer si le dossier de cache binaire n'existe pas. Cette étape
       # doit rester APRÈS la restauration : avant, le dossier existerait déjà et le cache
