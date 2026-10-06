@@ -13,8 +13,12 @@ ressort en douceur, et se replace derrière lui quand il marche sans qu'on y tou
    caméra, avec une sphère qui contient le plan proche (`nearPlaneRadius`) plus 5 cm. La CI le vérifie sur un
    tour complet de la caméra le long d'un versant, aux poses d'entre deux pas, et vérifie aussi que la même
    mesure, collision coupée, trouve la caméra dans la roche (le contrôle mord).
-2. **Le bras rentre aussitôt, ressort en douceur** (`armLengthAfter`) : la constante de temps du retour
-   (`returnSeconds`) ne joue que quand l'obstacle s'est dégagé.
+2. **Le bras rentre aussitôt contre un obstacle, et en douceur sinon** (`armLengthAfter`) : la constante de
+   temps du retour (`returnSeconds`) joue dans les deux sens, pour que le jeu puisse allonger le bras en vol et
+   le raccourcir à l'atterrissage (ADR-0031 de Levain). Le sphere cast va jusqu'au plus long du bras voulu et
+   du bras actuel : un bras qui rentre en douceur voit la roche sur toute sa longueur.
+6. **Le plancher** (`floorHeight`, posé par le jeu : la surface du lac plus la sphère du plan proche) : la
+   caméra ne descend pas dessous, et vise alors le pivot (`aboveFloor`). Le moteur ne dessine rien sous l'eau.
 3. **Les angles sont la source** : `CameraOrbit` garde le lacet et le tangage, la rotation du `Transform` en est
    calculée à chaque pas, comme la caméra libre du moteur.
 4. **Le bras ne voit ni le personnage ni l'eau** : le pivot est dans la capsule du renard, et le lac est un
@@ -44,7 +48,7 @@ ressort en douceur, et se replace derrière lui quand il marche sans qu'on y tou
 
 | Fichier | Contenu |
 |---|---|
-| [`include/rando/camera/third_person.hpp`](include/rando/camera/third_person.hpp) | `ThirdPersonCamera` (les réglages), `CameraOrbit` (l'état), `OrbitInput` ; `nearPlaneRadius`, `orbit`, `walksAwayFrom`, `recenteredYaw`, `armLengthAfter`, `armDirection`, `yawDegreesOf`, `stepCamera` ; `armSphereCast`, `cameraTargetOf` ; `ThirdPersonCameraModule` |
+| [`include/rando/camera/third_person.hpp`](include/rando/camera/third_person.hpp) | `ThirdPersonCamera` (les réglages), `CameraOrbit` (l'état), `OrbitInput` ; `nearPlaneRadius`, `orbit`, `walksAwayFrom`, `recenteredYaw`, `armLengthAfter`, `armDirection`, `yawDegreesOf`, `aboveFloor`, `stepCamera` ; `armSphereCast`, `cameraTargetOf` ; `ThirdPersonCameraModule` |
 | [`src/third_person.cpp`](src/third_person.cpp) | La logique, et le système flecs qui la branche sur la physique |
 
 ## Équivalents ailleurs

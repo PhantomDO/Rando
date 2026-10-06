@@ -44,6 +44,13 @@ struct ThirdPersonCamera
     float probeMargin = 0.05f;
     /// La forme de l'image, que le jeu pose à chaque image : le rayon de la sphère en dépend.
     float aspectRatio = 16.0f / 9.0f;
+    /// Le plancher de la caméra, posé par le jeu : la surface du lac, plus la sphère du plan proche
+    /// (ADR-0031). Le moteur ne dessine rien sous l'eau ; dessous, l'image montrerait le dessous du
+    /// plan d'eau. Rien : pas de plancher.
+    std::optional<float> floorHeight = std::nullopt;
+    /// Au-delà, en un pas, la cible a été téléportée (une noyade, ADR-0031) : la caméra coupe au
+    /// lieu de traverser la vallée en une image, interpolée du lac à la rive.
+    float cutDistance = 5.0f;
     /// Faux : le bras traverse tout. Seulement pour prouver que le contrôle de la CI mord.
     bool collides = true;
     /// La cible a disparu, et le journal l'a dit : il ne le répète pas à chaque pas.
@@ -58,6 +65,7 @@ struct CameraOrbit
     float pitchDegrees = -15.0f; ///< Positif vers le haut.
     float armLength = 3.5f;      ///< La longueur du bras à ce pas, obstacles compris.
     float secondsWithoutLook = 0.0f;
+    std::optional<glm::vec3> lastTargetFeet = std::nullopt; ///< Les pieds au pas précédent.
 };
 
 /// Ce que le joueur demande à la caméra pour ce pas : x tourne à droite, y lève les yeux. Une
@@ -88,8 +96,9 @@ void orbit(CameraOrbit& orbit, const ThirdPersonCamera& camera, const OrbitInput
                                   float targetYawDegrees, glm::vec2 targetVelocity, float seconds);
 
 /// La longueur du bras à ce pas. Touché plus court que le bras actuel : il prend la distance
-/// touchée **tout de suite**. Sinon, il revient vers `armLength` exponentiellement, sans dépasser
-/// la distance libre que le sphere cast vient de trouver.
+/// touchée **tout de suite**. Sinon, il rejoint `wanted` exponentiellement, **dans les deux sens**
+/// (le jeu allonge le bras en vol et le raccourcit à l'atterrissage, ADR-0031), sans dépasser la
+/// distance libre que le sphere cast vient de trouver.
 [[nodiscard]] float armLengthAfter(float current, float wanted, std::optional<float> hitDistance,
                                    float returnSeconds, float seconds);
 
@@ -121,8 +130,21 @@ using SphereCast = std::function<std::optional<float>(glm::vec3 origin, glm::vec
 /// Vide si la cible n'existe plus.
 [[nodiscard]] std::optional<CameraTarget> cameraTargetOf(flecs::entity target);
 
+/// La pose relevée au plancher, s'il le faut, et tournée vers le pivot : relevée sans viser, à 30°
+/// de tangage, la caméra laisserait le joueur sortir par le bas de l'image (ADR-0031).
+[[nodiscard]] levain::scene::Transform aboveFloor(const levain::scene::Transform& pose,
+                                                  const glm::vec3& pivot,
+                                                  std::optional<float> floorHeight);
+
+/// La cible a-t-elle sauté de plus de `cutDistance` depuis le pas précédent ? Une téléportation :
+/// la glu remet alors l'état précédent de la caméra sur sa nouvelle pose, et le rendu ne
+/// l'interpole pas à travers la vallée.
+[[nodiscard]] bool targetJumped(const CameraOrbit& orbit, const glm::vec3& feet, float cutDistance);
+
 /// Un pas de caméra (ADR-0030) : le regard, le recentrage, le bras contre la roche, puis la pose,
-/// au bout du bras, regardant le pivot.
+/// au bout du bras, regardant le pivot, au-dessus du plancher (`aboveFloor`). Le sphere cast va
+/// jusqu'au plus long du bras voulu et du bras actuel : un bras qui rentre en douceur doit voir
+/// la roche sur toute sa longueur, pas seulement sur celle qu'il vise.
 [[nodiscard]] levain::scene::Transform stepCamera(const ThirdPersonCamera& camera,
                                                   CameraOrbit& orbit, const OrbitInput& input,
                                                   float probeRadius, const CameraTarget& target,

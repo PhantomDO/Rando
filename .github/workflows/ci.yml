@@ -190,7 +190,7 @@ jobs:
           set -euo pipefail
           timeout --foreground --preserve-status -k 10 300 \
             ./build/${{ matrix.preset }}/game/rando --walk 1,0 --steps 120 | tee rando.log
-          grep -q "étapes du rendu : ombres : modèles, terrain ; opaques : modèles, terrain, herbe ; transparents : eau" rando.log \
+          grep -q "étapes du rendu : ombres : modèles, terrain ; opaques : modèles, terrain, herbe ; transparents : eau, jauge$" rando.log \
             || { echo "::error::la vallée ne s'est pas inscrite dans le rendu"; exit 1; }
           # Deux replis du moteur ne seraient qu'un avertissement : le terrain en couleurs unies sans
           # ses textures, une ambiance uniforme sans le ciel. Ici, ce sont des assets oubliés.
@@ -237,6 +237,34 @@ jobs:
                 || { echo "::error::sans collision, la caméra reste hors de la roche ($metres m) : le scénario ne prouve rien"; exit 1; }
             fi
           done
+
+      # Le critère de M6.5 se vérifie dans les tests (ADR-0031 de Levain) : le vol complet, la
+      # traversée et les noyades, sans GPU. Ici, le jeu complet joue le début de la descente du
+      # promontoire, par `--glide` qui scripte le saut et le second appui : le planeur doit s'ouvrir,
+      # la jauge se dessiner, et la caméra, plus longue en vol, rester hors de la roche. Mesuré en
+      # local : 319 images en vol sur 400, le bras à 6 m, 10 240 traits de jauge, marge 0,318 m.
+      - name: Le renard plane du promontoire
+        if: matrix.preset == 'linux-release'
+        env:
+          SDL_VIDEO_DRIVER: offscreen
+        run: |
+          set -euo pipefail
+          timeout --foreground --preserve-status -k 10 300 \
+            ./build/${{ matrix.preset }}/game/rando --start 70,280 --walk 1,0 --glide 60 \
+            --steps 400 | tee glide.log
+          line=$(sed -nE 's/.*planeur : ([0-9]+) images en vol, bras jusqu.à ([0-9.]+) m ; jauge : ([0-9]+) traits dessinés ; noyades : ([0-9]+).*/\1 \2 \3 \4/p' glide.log)
+          [ -n "$line" ] || { echo "::error::le jeu n'a pas rendu compte du planeur"; exit 1; }
+          read -r frames arm lines drownings <<<"$line"
+          # Le bras allongé en vol : sans lui, la marge ci-dessous ne prouverait rien du vol.
+          awk -v a="$arm" 'BEGIN { exit !(a >= 5.9) }' \
+            || { echo "::error::le bras n'a pas dépassé $arm m en vol, 6 attendus"; exit 1; }
+          [ "$frames" -ge 300 ] || { echo "::error::$frames images en vol, 300 au moins attendues"; exit 1; }
+          [ "$lines" -gt 0 ] || { echo "::error::la jauge ne s'est jamais dessinée"; exit 1; }
+          [ "$drownings" -eq 0 ] || { echo "::error::$drownings noyades en planant"; exit 1; }
+          metres=$(sed -nE 's/.*caméra : marge minimale au relief (-?[0-9.]+) m.*/\1/p' glide.log)
+          [ -n "$metres" ] || { echo "::error::le jeu n'a pas mesuré la caméra"; exit 1; }
+          awk -v m="$metres" 'BEGIN { exit !(m >= 0.02) }' \
+            || { echo "::error::la caméra est passée à $metres m du relief en planant"; exit 1; }
 
       - name: Tests
         run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure

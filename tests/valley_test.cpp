@@ -253,3 +253,28 @@ TEST_CASE("tombé dans le lac depuis le planeur, il se noie et revient sur la ri
     CHECK(feet.y > rando::LakeLevel);
     CHECK(rando::traversal::waterDepthAt(hike.lake, feet) == 0.0f);
 }
+
+TEST_CASE(
+    "au démarrage, le bras de la caméra se mesure sur la heightmap, sans entrer dans la pente")
+{
+    // La physique n'a pas encore de relief : le sphere cast du jeu ne toucherait rien.
+    const levain::terrain::ValleySettings settings;
+    const levain::terrain::Heightmap heightmap = levain::terrain::valleyOf(settings);
+    const rando::camera::SphereCast cast = rando::heightmapArmCast(heightmap);
+    // Du promontoire vers l'ouest, la crête qui monte : le bras de 3,5 m la touche.
+    const glm::vec3 pivot =
+        rando::feetAt(heightmap, rando::Promontory) + glm::vec3{0.0f, 0.6f, 0.0f};
+    const glm::vec3 west = glm::normalize(glm::vec3{-1.0f, 0.2f, 0.0f});
+    const std::optional<float> hit = cast(pivot, west, 3.5f, 0.36f);
+    REQUIRE(hit);
+    // Au point trouvé, la sphère est au-dessus du relief de toute son empreinte.
+    const glm::vec3 center = pivot + (west * hit.value_or(0.0f));
+    for (const glm::vec2 offset : {glm::vec2{0.0f}, glm::vec2{0.36f, 0.0f}, glm::vec2{-0.36f, 0.0f},
+                                   glm::vec2{0.0f, 0.36f}, glm::vec2{0.0f, -0.36f}})
+    {
+        CHECK(center.y - 0.36f >
+              levain::terrain::heightAt(heightmap, glm::vec2{center.x, center.z} + offset));
+    }
+    // Vers le haut, rien.
+    CHECK_FALSE(cast(pivot, glm::vec3{0.0f, 1.0f, 0.0f}, 3.5f, 0.36f));
+}

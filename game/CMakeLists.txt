@@ -3,13 +3,20 @@
 add_library(rando_valley STATIC src/valley_world.cpp)
 target_include_directories(rando_valley PUBLIC src)
 target_link_libraries(rando_valley PUBLIC
-    levain::physics levain::scene plugin::character plugin::terrain plugin::traversal plugin::water)
+    levain::physics levain::scene plugin::camera plugin::character plugin::terrain
+    plugin::traversal plugin::water)
+
+# La jauge d'endurance, en lignes de debug (ADR-0031 de Levain) : à part, la vallée reste sans rendu.
+add_library(rando_gauge STATIC src/stamina_gauge.cpp)
+target_include_directories(rando_gauge PUBLIC src)
+target_link_libraries(rando_gauge PUBLIC levain::render plugin::traversal)
 
 add_executable(rando src/main.cpp)
 target_link_libraries(rando PRIVATE
     levain::animation levain::app levain::assets levain::core levain::input levain::physics
     levain::platform levain::render levain::scene
-    plugin::camera plugin::character plugin::grass plugin::terrain plugin::water rando_valley)
+    plugin::camera plugin::character plugin::grass plugin::terrain plugin::traversal plugin::water
+    rando_gauge rando_valley)
 
 # Les fichiers du jeu, lus dans le dépôt : ses liaisons d'entrée (data/), et les assets de test qu'il
 # emprunte au moteur, téléchargés dans assets-cache/ par le script de Levain (README) : le renard, les

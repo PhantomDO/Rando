@@ -21,6 +21,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "rando/camera/third_person.hpp"
+#include "stamina_gauge.hpp"
 #include "valley_world.hpp"
 
 #include "levain/animation/animator.hpp"
@@ -38,6 +39,8 @@
 #include "levain/physics/physics_world.hpp"
 #include "levain/platform/input.hpp"
 #include "levain/platform/window.hpp"
+#include "levain/render/debug_lines.hpp"
+#include "levain/render/renderer.hpp"
 #include "levain/render/stages.hpp"
 #include "levain/scene/camera_control.hpp"
 #include "levain/scene/components.hpp"
@@ -68,7 +71,14 @@ struct RandoOptions
     /// `--camera-collision off` : le bras traverse la roche. Seulement pour prouver que la mesure
     /// de la CI mord (règle n°7 de Levain).
     bool cameraCollides = true;
+    /// `--glide N` : le renard saute au pas N, et ouvre le planeur 20 pas plus tard, d'un second
+    /// appui (ADR-0031 de Levain). Avec `--walk` et `--steps`, la descente de la CI.
+    std::optional<int> glideAtStep;
 };
+
+/// Le bras de la caméra en vol : plus long, pour voir où l'on va se poser (ADR-0031 de Levain).
+constexpr float GlideArmLength = 6.0f;
+constexpr float WalkArmLength = 3.5f;
 
 /// Les actions et les axes que le jeu lit, résolus une fois par leurs noms. Un nom absent de
 /// `input.cfg` est une erreur au démarrage : sans ça, la commande ne répondrait jamais, sans que
@@ -152,6 +162,8 @@ struct Valley
     levain::terrain::TerrainStats terrainCamera;
     levain::terrain::TerrainStats terrainShadows;
     levain::grass::GrassStats grassStats;
+    /// Les lignes de la jauge d'endurance (ADR-0031 de Levain).
+    levain::render::DebugLinesPass gaugePass;
     flecs::entity player;
     flecs::entity camera;
     /// La souris tourne la caméra tant qu'elle est capturée (ADR-0030 de Levain).
@@ -160,6 +172,11 @@ struct Valley
     /// sur toutes les poses mesurées, et leur nombre.
     float minimumMargin = std::numeric_limits<float>::infinity();
     int measuredPoses = 0;
+    /// Lus par la CI : les images où le renard planait, le plus long bras de la caméra, et les
+    /// traits de jauge dessinés.
+    int glidingFrames = 0;
+    float longestArm = 0.0f;
+    std::uint64_t gaugeLines = 0;
 };
 
 /// Ce que le joueur demande au renard, à chaque image : la direction des axes **tournée selon le
@@ -179,6 +196,26 @@ levain::character::WalkInput walkInputOf(const levain::app::PlayerInput& input,
     return {.direction = scripted.value_or(glm::vec2{axes.x, axes.z}),
             .run = levain::input::actionHeld(input.state, controls.sprint),
             .jump = levain::app::pressedSinceLastStep(input, controls.jump)};
+}
+
+/// Les appuis de `--glide N` : le saut au pas N, le second appui, celui qui ouvre le planeur,
+/// 20 pas plus tard, en l'air.
+bool scriptedGlidePress(int jumpStep, int frame)
+{
+    constexpr int GlideDelaySteps = 20;
+    return frame == jumpStep || frame == jumpStep + GlideDelaySteps;
+}
+
+/// La caméra selon l'état du renard (ADR-0031 de Levain) : le bras plus long en vol, et le
+/// plancher de l'eau, la surface du lac plus la sphère du plan proche. Le jeu les pose, comme la
+/// forme de l'image : la caméra ne connaît ni le planeur ni le lac.
+void frameCamera(rando::camera::ThirdPersonCamera& camera, const levain::app::CameraLens& lens,
+                 rando::traversal::Mode mode)
+{
+    camera.armLength = mode == rando::traversal::Mode::Glide ? GlideArmLength : WalkArmLength;
+    camera.floorHeight = rando::LakeLevel +
+                         rando::camera::nearPlaneRadius(lens, camera.aspectRatio) +
+                         camera.probeMargin;
 }
 
 /// Le regard scripté de `--orbit` : le lacet à vitesse constante, et le tangage qui va et vient
@@ -247,9 +284,18 @@ void steer(Valley& valley)
                            static_cast<float>(valley.app.frameCount) *
                                valley.app.fixedStep.stepSeconds)
             : lookOf(input, valley.controls, valley.mouseCaptured);
-    valley.player.get_mut<levain::character::WalkInput>() = walkInputOf(
-        input, valley.controls, valley.camera.get<rando::camera::CameraOrbit>().yawDegrees,
-        valley.options.walk);
+    auto& walk = valley.player.get_mut<levain::character::WalkInput>();
+    walk = walkInputOf(input, valley.controls,
+                       valley.camera.get<rando::camera::CameraOrbit>().yawDegrees,
+                       valley.options.walk);
+    if (valley.options.glideAtStep)
+    {
+        walk.jump = scriptedGlidePress(*valley.options.glideAtStep, valley.app.frameCount);
+    }
+    const rando::traversal::Mode mode = valley.player.get<rando::traversal::Traversal>().mode;
+    valley.glidingFrames += mode == rando::traversal::Mode::Glide ? 1 : 0;
+    frameCamera(valley.camera.get_mut<rando::camera::ThirdPersonCamera>(),
+                valley.camera.get<levain::app::CameraLens>(), mode);
 }
 
 /// La marge au relief d'une pose de la caméra : la hauteur, au-dessus du terrain, du centre et des
@@ -292,6 +338,32 @@ void measureMargin(Valley& valley)
                                            lens, aspect, valley.heightmap));
         ++valley.measuredPoses;
     }
+    valley.longestArm =
+        std::max(valley.longestArm, valley.camera.get<rando::camera::CameraOrbit>().armLength);
+}
+
+/// La jauge d'endurance, à la pose interpolée du renard et de la caméra, celle de l'image. Par-
+/// dessus ce qui est déjà dessiné (`OnTop`) : inscrite après l'herbe et l'eau, rien ne la couvre.
+void drawGauge(Valley& valley, const levain::render::StageContext& context)
+{
+    const auto* feet = valley.player.try_get<levain::scene::WorldTransform>();
+    const auto* eye = valley.camera.try_get<levain::scene::WorldTransform>();
+    if (feet == nullptr || eye == nullptr)
+    {
+        return;
+    }
+    const glm::quat cameraRotation = levain::scene::worldRotation(*eye);
+    const auto lines = rando::staminaGauge(
+        valley.player.get<rando::traversal::Stamina>(),
+        rando::gaugeCenter(levain::scene::worldPosition(*feet), cameraRotation), cameraRotation);
+    if (lines.empty())
+    {
+        return;
+    }
+    valley.gaugeLines += lines.size();
+    levain::render::drawDebugLines(context.commandList, valley.gaugePass, context.target,
+                                   context.viewProjection, lines,
+                                   levain::render::DebugDepth::OnTop);
 }
 
 /// Le nom d'un état du sol, pour le journal.
@@ -320,6 +392,12 @@ bool finishValley(const Valley& valley)
     levain::core::log("rando", levain::core::LogLevel::Info,
                       "caméra : marge minimale au relief {:.3f} m sur {} poses",
                       valley.minimumMargin, valley.measuredPoses);
+    // Lu par la CI : la descente en planeur (ADR-0031 de Levain).
+    levain::core::log("rando", levain::core::LogLevel::Info,
+                      "planeur : {} images en vol, bras jusqu'à {:.2f} m ; jauge : {} traits "
+                      "dessinés ; noyades : {}",
+                      valley.glidingFrames, valley.longestArm, valley.gaugeLines,
+                      valley.player.get<rando::traversal::Traversal>().drownings);
     const glm::vec3 feet = valley.player.get<levain::scene::Transform>().position;
     const auto* state = valley.player.try_get<levain::physics::CharacterState>();
     levain::core::log("rando", levain::core::LogLevel::Info,
@@ -377,21 +455,21 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
 
     // La caméra à la troisième personne (ADR-0030 de Levain), son plan proche à 0,2 m pour qu'elle
     // puisse approcher la roche. Elle part du bout de son bras, derrière le renard qui regarde vers
-    // +x, contre la roche s'il y en a : posée sur ses pieds, la première image interpolerait depuis
-    // l'intérieur du sol.
+    // +x, contre la roche s'il y en a (`rando::heightmapArmCast`) : posée sur ses pieds, la
+    // première image interpolerait depuis l'intérieur du sol.
     world.import<rando::camera::ThirdPersonCameraModule>();
-    const rando::camera::ThirdPersonCamera cameraSettings{.target = player.id(),
-                                                          .collides = options.cameraCollides};
+    rando::camera::ThirdPersonCamera cameraSettings{.target = player.id(),
+                                                    .collides = options.cameraCollides};
     const levain::app::CameraLens lens{
         .verticalFovDegrees = 60.0f, .nearPlane = 0.2f, .farPlane = 1000.0f};
     rando::camera::CameraOrbit orbit{.yawDegrees =
                                          rando::camera::yawDegreesOf(rando::facingPlusX())};
-    const levain::scene::Transform cameraStart = rando::camera::stepCamera(
-        cameraSettings, orbit, {},
-        rando::camera::nearPlaneRadius(lens, cameraSettings.aspectRatio) +
-            cameraSettings.probeMargin,
-        {.feet = start, .yawDegrees = orbit.yawDegrees, .velocity = {}},
-        rando::camera::armSphereCast(world.get<levain::physics::PhysicsWorld>()), 0.0f);
+    const levain::scene::Transform cameraStart =
+        rando::camera::stepCamera(cameraSettings, orbit, {},
+                                  rando::camera::nearPlaneRadius(lens, cameraSettings.aspectRatio) +
+                                      cameraSettings.probeMargin,
+                                  {.feet = start, .yawDegrees = orbit.yawDegrees, .velocity = {}},
+                                  rando::heightmapArmCast(heightmap), 0.0f);
     const flecs::entity camera =
         world.entity("camera").set(cameraSettings).set(orbit).set(lens).set(cameraStart);
 
@@ -424,6 +502,12 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
     }
     upload->close();
     device.executeCommandList(upload);
+    auto gaugePass =
+        levain::render::createDebugLinesPass(device, levain::render::sceneTargetInfo());
+    if (!gaugePass)
+    {
+        return std::unexpected(gaugePass.error());
+    }
 
     const auto valley =
         std::make_shared<Valley>(Valley{.app = app,
@@ -436,11 +520,15 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
                                         .terrainCamera = {},
                                         .terrainShadows = {},
                                         .grassStats = {},
+                                        .gaugePass = std::move(*gaugePass),
                                         .player = player,
                                         .camera = camera,
                                         .mouseCaptured = false,
                                         .minimumMargin = std::numeric_limits<float>::infinity(),
-                                        .measuredPoses = 0});
+                                        .measuredPoses = 0,
+                                        .glidingFrames = 0,
+                                        .longestArm = 0.0f,
+                                        .gaugeLines = 0});
     // La mesure du critère, après la caméra dans la même phase : déclarée après l'import de son
     // module, elle passe après son système (l'ordre des déclarations, README de scene). Un
     // pointeur nu : les points d'accroche gardent la vallée, et meurent avant le monde.
@@ -451,6 +539,11 @@ levain::core::Result<levain::app::FrameHooks> startRando(levain::app::App& app,
                                       valley->terrainCamera, valley->terrainShadows);
     levain::grass::addGrassPasses(app.renderer.stages, valley->grass, valley->grassStats);
     levain::water::addWaterPasses(app.renderer.stages, valley->water);
+    // Après l'herbe et l'eau : la jauge passe par-dessus tout (ADR-0031 de Levain).
+    levain::render::addStageFunction(
+        app.renderer.stages, levain::render::RenderStage::Transparent, "jauge",
+        [valley = valley.get()](const levain::render::StageContext& context)
+        { drawGauge(*valley, context); });
     levain::core::log("rando", levain::core::LogLevel::Info, "étapes du rendu : {}",
                       levain::render::describeStages(app.renderer.stages));
     return levain::app::FrameHooks{
@@ -516,6 +609,17 @@ std::optional<RandoOptions> parseOptions(std::span<char* const> arguments,
             options.orbitDegreesPerSecond = static_cast<float>(*speed);
             continue;
         }
+        if (name == "--glide")
+        {
+            // Un numéro de pas entier : « 60 », pas « 60.5 ».
+            const std::optional<double> step = levain::app::parsePositive(value);
+            if (!step || *step != std::floor(*step) || *step > 1e6)
+            {
+                return std::nullopt;
+            }
+            options.glideAtStep = static_cast<int>(*step);
+            continue;
+        }
         if (name != "--walk" && name != "--start")
         {
             return std::nullopt;
@@ -526,6 +630,12 @@ std::optional<RandoOptions> parseOptions(std::span<char* const> arguments,
             return std::nullopt;
         }
         (name == "--walk" ? options.walk : options.start) = *pair;
+    }
+    // `--glide` compte en pas, un par image : sans `--steps`, une image sans pas effacerait
+    // l'appui scripté avant qu'un pas le lise, et le planeur ne s'ouvrirait pas, sans un mot.
+    if (options.glideAtStep && !settings.steps)
+    {
+        return std::nullopt;
     }
     return options;
 }
@@ -555,7 +665,7 @@ int main(int argc, char** argv)
         {
             std::println(stderr,
                          "usage : rando {} [--walk x,z] [--start x,z] [--orbit degrés/s] "
-                         "[--camera-collision on|off]",
+                         "[--camera-collision on|off] [--glide pas, avec --steps]",
                          levain::app::CommonOptionsUsage);
             return 2;
         }

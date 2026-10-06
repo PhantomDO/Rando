@@ -91,8 +91,8 @@ float armLengthAfter(float current, float wanted, std::optional<float> hitDistan
     {
         return std::max(*hitDistance, 0.0f);
     }
-    const float free = hitDistance.value_or(wanted);
-    return std::min(approach(current, wanted, returnSeconds, seconds), free);
+    const float eased = approach(current, wanted, returnSeconds, seconds);
+    return hitDistance ? std::min(eased, *hitDistance) : eased;
 }
 
 glm::vec3 armDirection(float yawDegrees, float pitchDegrees)
@@ -110,6 +110,29 @@ float yawDegreesOf(const glm::quat& rotation)
     return glm::degrees(std::atan2(-forward.x, -forward.z));
 }
 
+levain::scene::Transform aboveFloor(const levain::scene::Transform& pose, const glm::vec3& pivot,
+                                    std::optional<float> floorHeight)
+{
+    if (!floorHeight || pose.position.y >= *floorHeight)
+    {
+        return pose;
+    }
+    levain::scene::Transform raised = pose;
+    raised.position.y = *floorHeight;
+    // Vers le pivot : le lacet, puis le tangage, dans l'ordre de la caméra libre.
+    const glm::vec3 look = pivot - raised.position;
+    const float yaw = std::atan2(-look.x, -look.z);
+    const float pitch = std::atan2(look.y, glm::length(glm::vec2{look.x, look.z}));
+    raised.rotation = glm::angleAxis(yaw, glm::vec3{0.0f, 1.0f, 0.0f}) *
+                      glm::angleAxis(pitch, glm::vec3{1.0f, 0.0f, 0.0f});
+    return raised;
+}
+
+bool targetJumped(const CameraOrbit& orbit, const glm::vec3& feet, float cutDistance)
+{
+    return orbit.lastTargetFeet && glm::distance(*orbit.lastTargetFeet, feet) > cutDistance;
+}
+
 levain::scene::Transform stepCamera(const ThirdPersonCamera& camera, CameraOrbit& orbit,
                                     const OrbitInput& input, float probeRadius,
                                     const CameraTarget& target, const SphereCast& sphereCast,
@@ -120,16 +143,19 @@ levain::scene::Transform stepCamera(const ThirdPersonCamera& camera, CameraOrbit
     const glm::vec3 pivot = target.feet + glm::vec3{0.0f, camera.pivotHeight, 0.0f};
     const glm::vec3 direction = armDirection(orbit.yawDegrees, orbit.pitchDegrees);
     const std::optional<float> hit =
-        camera.collides ? sphereCast(pivot, direction, camera.armLength, probeRadius)
-                        : std::nullopt;
+        camera.collides
+            ? sphereCast(pivot, direction, std::max(camera.armLength, orbit.armLength), probeRadius)
+            : std::nullopt;
     orbit.armLength =
         armLengthAfter(orbit.armLength, camera.armLength, hit, camera.returnSeconds, seconds);
+    orbit.lastTargetFeet = target.feet;
     // Lacet d'abord, tangage ensuite, comme la caméra libre : sinon elle s'incline sur le côté.
-    return {.position = pivot + (direction * orbit.armLength),
-            .rotation =
-                glm::angleAxis(glm::radians(orbit.yawDegrees), glm::vec3{0.0f, 1.0f, 0.0f}) *
-                glm::angleAxis(glm::radians(orbit.pitchDegrees), glm::vec3{1.0f, 0.0f, 0.0f}),
-            .scale = glm::vec3{1.0f}};
+    const levain::scene::Transform pose{
+        .position = pivot + (direction * orbit.armLength),
+        .rotation = glm::angleAxis(glm::radians(orbit.yawDegrees), glm::vec3{0.0f, 1.0f, 0.0f}) *
+                    glm::angleAxis(glm::radians(orbit.pitchDegrees), glm::vec3{1.0f, 0.0f, 0.0f}),
+        .scale = glm::vec3{1.0f}};
+    return aboveFloor(pose, pivot, camera.floorHeight);
 }
 
 SphereCast armSphereCast(const levain::physics::PhysicsWorld& physics)
@@ -165,7 +191,8 @@ namespace
 /// la caméra s'arrête là où elle est, plutôt que de lire une entité morte.
 void followTarget(const flecs::world& world, ThirdPersonCamera& camera, CameraOrbit& orbit,
                   const OrbitInput& input, const levain::app::CameraLens& lens,
-                  levain::scene::Transform& transform, float seconds)
+                  levain::scene::Transform& transform, levain::scene::PreviousTransform& previous,
+                  float seconds)
 {
     const std::optional<CameraTarget> target = cameraTargetOf(world.entity(camera.target));
     if (!target)
@@ -180,9 +207,14 @@ void followTarget(const flecs::world& world, ThirdPersonCamera& camera, CameraOr
     }
     // Par référence : un `set` remettrait l'état précédent à jour, et le rendu ne l'interpolerait
     // plus (ADR-0016 de Levain).
+    const bool cut = targetJumped(orbit, target->feet, camera.cutDistance);
     transform = stepCamera(camera, orbit, input,
                            nearPlaneRadius(lens, camera.aspectRatio) + camera.probeMargin, *target,
                            armSphereCast(world.get<levain::physics::PhysicsWorld>()), seconds);
+    if (cut)
+    {
+        previous.transform = transform;
+    }
 }
 
 } // namespace
@@ -202,13 +234,16 @@ ThirdPersonCameraModule::ThirdPersonCameraModule(flecs::world& world)
     // Après le pas de physique : la cible a déjà bougé, et le bras voit le décor de ce pas.
     world
         .system<ThirdPersonCamera, CameraOrbit, const OrbitInput, const levain::app::CameraLens,
-                levain::scene::Transform>("ThirdPersonCamera")
+                levain::scene::Transform, levain::scene::PreviousTransform>("ThirdPersonCamera")
         .kind<levain::scene::PostPhysics>()
         .each(
             [](flecs::iter& it, std::size_t, ThirdPersonCamera& camera, CameraOrbit& orbit,
                const OrbitInput& input, const levain::app::CameraLens& lens,
-               levain::scene::Transform& transform)
-            { followTarget(it.world(), camera, orbit, input, lens, transform, it.delta_time()); });
+               levain::scene::Transform& transform, levain::scene::PreviousTransform& previous)
+            {
+                followTarget(it.world(), camera, orbit, input, lens, transform, previous,
+                             it.delta_time());
+            });
 }
 
 } // namespace rando::camera

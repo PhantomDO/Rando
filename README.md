@@ -8,9 +8,10 @@ visible dès le départ, et le chemin à trouver soi-même. Il est construit ave
 - [Pourquoi le jeu et le moteur sont dans deux dépôts](https://github.com/PhantomDO/Levain/blob/main/docs/adr/0018-moteur-plugins-et-jeu.md)
   (ADR-0018 de Levain)
 
-**Statut** : la vallée. Le renard s'y promène au clavier (ZQSD ou WASD, Maj pour courir, Espace pour sauter),
-dans l'herbe, au bord du lac, sous le ciel de Kloofendal ; la caméra le suit à distance fixe, en attendant la
-caméra à la troisième personne (#2). Le jeu tourne au-dessus du module `app` du moteur
+**Statut** : la vallée. Le renard s'y promène au clavier (ZQSD ou WASD, Maj pour courir, Espace pour sauter,
+Espace de nouveau en l'air pour planer), dans l'herbe, au bord du lac, sous le ciel de Kloofendal ; il nage dans
+le lac, et s'y noie si son endurance s'épuise. Une jauge près de sa tête montre son endurance quand elle n'est
+pas pleine. Le jeu tourne au-dessus du module `app` du moteur
 ([ADR-0029 de Levain](https://github.com/PhantomDO/Levain/blob/main/docs/adr/0029-module-app.md)) : son `main`
 pose la vallée et le joueur, le moteur fait la boucle.
 
@@ -37,6 +38,14 @@ commence. La CI lance
 reprend), ou au stick droit. Elle rentre contre la roche que coupe son bras, et se replace derrière le renard
 quand il marche sans qu'on y touche. Pour la CI, `--orbit N` la fait tourner à N°/s avec `--steps`, et
 `--camera-collision off` lui fait traverser la roche, pour prouver que la mesure de la marge au relief mord.
+En vol, son bras s'allonge à 6 m ; dans l'eau, elle ne descend pas sous la surface.
+
+**Marcher, planer, nager** ([ADR-0031 de Levain](https://github.com/PhantomDO/Levain/blob/main/docs/adr/0031-nage-planeur-endurance.md),
+`plugins/traversal`) : un état à la fois décide de la vitesse du renard ; l'endurance limite la course, le vol
+et la nage. Le critère de M6.5 se joue dans les tests, sur la vraie vallée, sans GPU (`tests/valley_test.cpp`) :
+la descente du promontoire en planant, la traversée du lac, et deux noyades. Pour la CI, `--glide N` fait
+sauter le renard au pas N et ouvre le planeur 20 pas plus tard :
+`rando --start 70,280 --walk 1,0 --glide 60 --steps 400` part du promontoire.
 Les tests du plugin : `ctest --test-dir build/linux-debug`. Avec `FETCHCONTENT_SOURCE_DIR_LEVAIN`, le script
 est dans le clone du moteur : `../Levain/tools/fetch-assets.sh assets-cache …`.
 
