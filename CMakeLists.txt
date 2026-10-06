@@ -20,6 +20,7 @@ add_compile_options(-pedantic-errors -Wall -Wextra -Werror)
 
 # Les plugins gameplay du jeu (ADR-0018 de Levain), avant le jeu qui les lie.
 add_subdirectory(plugins/camera)
+add_subdirectory(plugins/traversal)
 add_subdirectory(game)
 
 enable_testing()
