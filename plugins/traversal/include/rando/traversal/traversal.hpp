@@ -5,14 +5,18 @@
 // controller du moteur ; la marche est celle du plugin `character`, appelée telle quelle.
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 
+#include <flecs.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "levain/animation/animator.hpp"
 #include "levain/character/walk.hpp"
 #include "levain/physics/character.hpp"
+#include "levain/physics/physics_world.hpp"
+#include "levain/scene/components.hpp"
 #include "levain/water/lake.hpp"
 
 namespace rando::traversal
@@ -93,7 +97,8 @@ struct Traversal
 {
     Mode mode = Mode::Walk;
     /// Où la noyade le ramène : le dernier point où il avait pied, hors de l'eau, ou, entré dans
-    /// l'eau par les airs, le sol sec le plus proche de l'amerrissage (choix de Donnovan).
+    /// l'eau par les airs (ou sans point sec), le sol sec le plus proche de l'amerrissage (choix de
+    /// Donnovan).
     std::optional<glm::vec3> lastDryFeet;
     int drownings = 0;
 };
@@ -108,6 +113,20 @@ struct Situation
 
 /// La profondeur de `feet` sous la surface du lac : 0 hors du disque ou au-dessus de l'eau.
 [[nodiscard]] float waterDepthAt(const levain::water::Lake& lake, const glm::vec3& feet);
+
+/// La hauteur du sol sous le point (x, z), ou rien. Une fonction pour que les tests s'en passent
+/// de physique ; le module la tire du monde physique (`groundProbe`).
+using GroundProbe = std::function<std::optional<float>(glm::vec2)>;
+
+/// Le sol sec le plus proche de `entry`, où la noyade ramène un joueur entré dans l'eau par les
+/// airs : des cercles de 1 m en 1 m autour du point d'entrée, 24 directions chacun, jusqu'à deux
+/// rayons du lac. Sec : au-dessus de la surface. Rien si aucun cercle n'en trouve.
+[[nodiscard]] std::optional<glm::vec3> nearestShore(const levain::water::Lake& lake,
+                                                    glm::vec2 entry, const GroundProbe& ground);
+
+/// La sonde du monde physique : un rayon vertical, de haut en bas, sur le décor (la couche
+/// `Static`) ; ni les caisses, ni le joueur.
+[[nodiscard]] GroundProbe groundProbe(const levain::physics::PhysicsWorld& physics);
 
 /// L'état du pas qui commence (ADR-0031, « Un pas ») :
 /// - les pieds assez profonds : la nage, d'où qu'il vienne ;
@@ -148,5 +167,27 @@ struct Situation
 /// la pose de repos au lieu de courir dans le vide (choix de Donnovan).
 [[nodiscard]] levain::animation::CharacterMotion
 motionOf(Mode mode, const levain::physics::CharacterState& state);
+
+/// Un pas : l'état, la vitesse demandée au moteur, la rotation, l'endurance, le point où ramènera
+/// la noyade, et le saut consommé **dans tous les états** : le jeu écrit le `WalkInput` une fois
+/// par image, et dans une image à deux pas, le planeur s'ouvrirait et se replierait sur le même
+/// appui. Rend la pose où ramener le joueur s'il vient de se noyer : la glu la pose (`set`), ce
+/// qui le téléporte (ADR-0028 de Levain) ; une écriture par référence ne le ferait pas.
+[[nodiscard]] std::optional<levain::scene::Transform>
+stepTraversal(const TraversalRules& rules, const levain::water::Lake& lake, Traversal& traversal,
+              Stamina& stamina, levain::character::WalkInput& input,
+              const levain::physics::CharacterState& state,
+              levain::physics::CharacterVelocity& velocity, levain::scene::Transform& transform,
+              const GroundProbe& ground, float seconds);
+
+/// Le module flecs : `world.import<rando::traversal::TraversalModule>()`, **à la place** du
+/// `WalkModule` : un seul système déplace le joueur. Le lac est un singleton du monde
+/// (`world.set(lake)`) ; une entité qui a un `physics::CharacterController`, des
+/// `TraversalRules` traverse, dans la phase `Simulation`, avant le pas de physique ; le module
+/// lui ajoute `WalkInput`, `Traversal`, `Stamina` et `animation::CharacterMotion`.
+struct TraversalModule
+{
+    explicit TraversalModule(flecs::world& world);
+};
 
 } // namespace rando::traversal
