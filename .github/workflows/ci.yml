@@ -51,6 +51,11 @@ jobs:
       # runner, le programme s'arrêterait en erreur au lieu de sauter la détection en silence.
       ASAN_OPTIONS: detect_leaks=1
       UBSAN_OPTIONS: print_stacktrace=1
+      # lavapipe seul, et préchargé sous ASan sur les étapes qui lancent du Vulkan : le faux positif de
+      # LeakSanitizer quand le loader décharge les pilotes de mesa-vulkan-drivers (Levain,
+      # .agents/skills/build/GOTCHA.md, « LeakSanitizer et lavapipe installé à côté de RADV »).
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+      ASAN_VK_PRELOAD: ${{ matrix.preset == 'linux-asan' && '/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so' || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -203,6 +208,7 @@ jobs:
       - name: Lancer le jeu
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           timeout --foreground --preserve-status -k 10 300 \
@@ -235,6 +241,7 @@ jobs:
         if: matrix.preset == 'linux-release'
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           for collision in on off; do
@@ -264,6 +271,7 @@ jobs:
         if: matrix.preset == 'linux-release'
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           timeout --foreground --preserve-status -k 10 300 \
@@ -284,6 +292,8 @@ jobs:
             || { echo "::error::la caméra est passée à $metres m du relief en planant"; exit 1; }
 
       - name: Tests
+        env:
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
 
       # Format et analyse statique une seule fois : ce sont des propriétés des sources, pas
