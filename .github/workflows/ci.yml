@@ -25,7 +25,10 @@ jobs:
     # UndefinedBehaviorSanitizer, puis lance le jeu : une fuite ou un comportement
     # indéfini fait échouer le job.
     name: ${{ matrix.preset }}
-    runs-on: ubuntu-latest
+    # La version d'Ubuntu de la machine de référence (SPECS §10), en toutes lettres : `ubuntu-latest`
+    # change de version quand GitHub le décide, et la CI s'écarterait de la boîte de dev sans un mot.
+    # Les clés du cache vcpkg la relisent sur le runner (étape « Image du runner »).
+    runs-on: ubuntu-26.04
 
     strategy:
       fail-fast: false
@@ -51,6 +54,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # La version d'Ubuntu, lue sur le runner : les clés du cache vcpkg la suivent quand `runs-on`
+      # change, sans qu'on ait à la recopier.
+      - name: Image du runner
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "IMAGE=$ID-$VERSION_ID" >> "$GITHUB_ENV"
 
       # zip est indispensable au bootstrap de vcpkg et manque sur l'image.
       #
@@ -135,12 +146,15 @@ jobs:
       # dans le cache : il grossit à chaque changement du manifeste (891 Mo après #6). Une PR lit le
       # cache de main et de sa branche de base, mais le sien n'est lisible que par elle : la CI ne
       # tournant en push que sur main, les PR empilées au-dessus repartent de celui de main.
+      # L'image du runner est dans la clé : une archive compilée sous une autre version d'Ubuntu n'a
+      # plus la même ABI. Sous la même clé, vcpkg la recompilerait à chaque exécution, et le cache,
+      # déjà présent pour cette clé, ne serait jamais réécrit.
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: vcpkg-cache
-          key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
-          restore-keys: vcpkg-${{ env.VCPKG_TAG }}-
+          key: vcpkg-${{ env.IMAGE }}-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
+          restore-keys: vcpkg-${{ env.IMAGE }}-${{ env.VCPKG_TAG }}-
 
       # vcpkg refuse de démarrer si le dossier de cache binaire n'existe pas. Cette étape
       # doit rester APRÈS la restauration : avant, le dossier existerait déjà et le cache
