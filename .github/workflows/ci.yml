@@ -25,7 +25,10 @@ jobs:
     # UndefinedBehaviorSanitizer, puis lance le jeu : une fuite ou un comportement
     # indéfini fait échouer le job.
     name: ${{ matrix.preset }}
-    runs-on: ubuntu-latest
+    # La version d'Ubuntu de la machine de référence (SPECS §10), en toutes lettres : `ubuntu-latest`
+    # change de version quand GitHub le décide, et la CI s'écarterait de la boîte de dev sans un mot.
+    # Les clés du cache vcpkg la relisent sur le runner (étape « Image du runner »).
+    runs-on: ubuntu-26.04
 
     strategy:
       fail-fast: false
@@ -48,6 +51,11 @@ jobs:
       # runner, le programme s'arrêterait en erreur au lieu de sauter la détection en silence.
       ASAN_OPTIONS: detect_leaks=1
       UBSAN_OPTIONS: print_stacktrace=1
+      # lavapipe seul, et préchargé sous ASan sur les étapes qui lancent du Vulkan : le faux positif de
+      # LeakSanitizer quand le loader décharge les pilotes de mesa-vulkan-drivers (Levain,
+      # .agents/skills/build/GOTCHA.md, « LeakSanitizer et lavapipe installé à côté de RADV »).
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+      ASAN_VK_PRELOAD: ${{ matrix.preset == 'linux-asan' && '/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so' || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -125,6 +133,18 @@ jobs:
       - name: Bootstrap vcpkg
         run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
+      # Ce que vcpkg met dans l'ABI de chaque paquet et qui tient au runner : la version d'Ubuntu, et
+      # l'empreinte du compilateur (vcpkg hache son binaire). Un GCC mis à jour dans l'image, ou la
+      # variante amd64v3 activée ou retirée (ADR-0033 de Levain), change toutes les ABI : sous une clé
+      # inchangée, vcpkg recompilerait tout à chaque exécution et le cache ne serait jamais réécrit. Lu
+      # juste avant le cache, après les installations de « Outils ».
+      - name: Image du runner
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          cc_sha=$(cat "$(readlink -f "$(command -v cc)")" "$(readlink -f "$(command -v c++)")" | sha1sum | cut -c1-12)
+          echo "IMAGE=$ID-$VERSION_ID-$cc_sha" >> "$GITHUB_ENV"
+
       # On cache les archives binaires de vcpkg, pas ses sources : 19 Mo mesurés pour
       # nvrhi + flecs + doctest, contre 23 s de compilation à froid (journal, M0.2).
       # ports/ fait partie de la clé : un port overlay modifié change l'ABI du paquet, et un
@@ -135,12 +155,14 @@ jobs:
       # dans le cache : il grossit à chaque changement du manifeste (891 Mo après #6). Une PR lit le
       # cache de main et de sa branche de base, mais le sien n'est lisible que par elle : la CI ne
       # tournant en push que sur main, les PR empilées au-dessus repartent de celui de main.
+      # L'image du runner est dans la clé (étape précédente), et le triplet x64-linux aussi : ses
+      # options de compilation entrent dans l'ABI de chaque paquet.
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: vcpkg-cache
-          key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
-          restore-keys: vcpkg-${{ env.VCPKG_TAG }}-
+          key: vcpkg-${{ env.IMAGE }}-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json', 'ports/**', 'triplets/x64-linux.cmake') }}
+          restore-keys: vcpkg-${{ env.IMAGE }}-${{ env.VCPKG_TAG }}-
 
       # vcpkg refuse de démarrer si le dossier de cache binaire n'existe pas. Cette étape
       # doit rester APRÈS la restauration : avant, le dossier existerait déjà et le cache
@@ -186,6 +208,7 @@ jobs:
       - name: Lancer le jeu
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           timeout --foreground --preserve-status -k 10 300 \
@@ -218,6 +241,7 @@ jobs:
         if: matrix.preset == 'linux-release'
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           for collision in on off; do
@@ -247,6 +271,7 @@ jobs:
         if: matrix.preset == 'linux-release'
         env:
           SDL_VIDEO_DRIVER: offscreen
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: |
           set -euo pipefail
           timeout --foreground --preserve-status -k 10 300 \
@@ -267,6 +292,8 @@ jobs:
             || { echo "::error::la caméra est passée à $metres m du relief en planant"; exit 1; }
 
       - name: Tests
+        env:
+          LD_PRELOAD: ${{ env.ASAN_VK_PRELOAD }}
         run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
 
       # Format et analyse statique une seule fois : ce sont des propriétés des sources, pas
